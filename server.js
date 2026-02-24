@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import multer from 'multer';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import Database from 'better-sqlite3';
+import initSqlJs from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -87,11 +87,20 @@ const upload = multer({
 // База данных
 let db;
 
-function initDatabase() {
+async function initDatabase() {
+  const SQL = await initSqlJs();
+  
   const dbPath = path.join(__dirname, 'database.sqlite');
-  db = new Database(dbPath);
+  
+  // Загружаем существующую БД или создаём новую
+  let fileBuffer = null;
+  if (fs.existsSync(dbPath)) {
+    fileBuffer = fs.readFileSync(dbPath);
+  }
+  
+  db = new SQL.Database(fileBuffer);
 
-  db.exec(`
+  db.run(`
     CREATE TABLE IF NOT EXISTS documents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -100,17 +109,21 @@ function initDatabase() {
       original_name TEXT NOT NULL,
       file_size INTEGER,
       file_type TEXT,
-      is_visible BOOLEAN DEFAULT 1,
+      is_visible INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    
+    )
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS admin_users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    
+    )
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS blocks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
@@ -121,9 +134,9 @@ function initDatabase() {
       button_link TEXT,
       image TEXT,
       items TEXT,
-      is_visible BOOLEAN DEFAULT 1,
+      is_visible INTEGER DEFAULT 1,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+    )
   `);
 
   // Заполняем таблицу блоков начальными данными
@@ -137,8 +150,8 @@ function initDatabase() {
   ];
 
   for (const block of defaultBlocks) {
-    const exists = db.get("SELECT id FROM blocks WHERE name = ?", [block.name]);
-    if (!exists) {
+    const result = db.exec("SELECT id FROM blocks WHERE name = ?", [block.name]);
+    if (result.length === 0 || result[0].values.length === 0) {
       db.run(
         "INSERT INTO blocks (name, title, subtitle, content, button_text, button_link, items, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [block.name, block.title, block.subtitle || '', block.content || '', block.button_text || '', block.button_link || '', block.items || null, block.is_visible || 1]
@@ -148,33 +161,70 @@ function initDatabase() {
   }
 
   // Проверим все блоки
-  const allBlocks = db.all("SELECT id, name, is_visible FROM blocks");
+  const allBlocks = db.exec("SELECT id, name, is_visible FROM blocks");
   console.log('📦 Блоки в БД:', allBlocks);
 
   // Создаем начального администратора (или обновляем пароль)
-  const adminExists = db.get("SELECT * FROM admin_users WHERE username = 'admin'");
+  const adminResult = db.exec("SELECT * FROM admin_users WHERE username = 'admin'");
   const hash = bcrypt.hashSync('admin123', 10);
   
-  if (!adminExists) {
+  if (adminResult.length === 0 || adminResult[0].values.length === 0) {
     db.run(
       "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
       ['admin', hash]
     );
     console.log('✅ Создан администратор: admin / admin123');
   } else {
-    // Обновляем пароль на случай если он неверный
     db.run(
       "UPDATE admin_users SET password_hash = ? WHERE username = 'admin'",
       [hash]
     );
     console.log('🔄 Обновлен пароль администратора: admin / admin123');
   }
+
+  // Сохраняем БД
+  saveDatabase();
     
   console.log('✅ База данных инициализирована');
   console.log(`🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
 }
 
-initDatabase();
+// Функция сохранения БД в файл
+function saveDatabase() {
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync(path.join(__dirname, 'database.sqlite'), buffer);
+}
+
+// Вспомогательные функции для работы с БД
+function dbGet(sql, params = []) {
+  const result = db.exec(sql, params);
+  if (result.length === 0 || result[0].values.length === 0) return null;
+  const columns = result[0].columns;
+  const values = result[0].values[0];
+  const row = {};
+  columns.forEach((col, i) => row[col] = values[i]);
+  return row;
+}
+
+function dbAll(sql, params = []) {
+  const result = db.exec(sql, params);
+  if (result.length === 0) return [];
+  const columns = result[0].columns;
+  return result[0].values.map(values => {
+    const row = {};
+    columns.forEach((col, i) => row[col] = values[i]);
+    return row;
+  });
+}
+
+function dbRun(sql, params = []) {
+  db.run(sql, params);
+  saveDatabase();
+  return { lastID: db.exec("SELECT last_insert_rowid()")[0].values[0][0] };
+}
+
+initDatabase().catch(console.error);
 
 // 🔐 FIXED: Middleware аутентификации с исправленной проверкой
 const authenticateToken = (req, res, next) => {
@@ -263,7 +313,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(500).json({ error: 'База данных не готова' });
     }
     
-    const user = db.get(
+    const user = dbGet(
       "SELECT * FROM admin_users WHERE username = ?",
       [username]
     );
@@ -320,7 +370,7 @@ app.get('/api/verify-token', authenticateToken, (req, res) => {
 // Получить все документы (публичный доступ) - БЕЗ аутентификации
 app.get('/api/documents', async (req, res) => {
   try {
-    const documents = db.all(
+    const documents = dbAll(
       "SELECT * FROM documents WHERE is_visible = 1 ORDER BY created_at DESC"
     );
     
@@ -341,7 +391,7 @@ app.get('/api/documents', async (req, res) => {
 // 🔐 FIXED: Получить документы для админки (требуется токен)
 app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   try {
-    const documents = db.all(
+    const documents = dbAll(
       "SELECT * FROM documents ORDER BY created_at DESC"
     );
     
@@ -378,7 +428,7 @@ app.post('/api/admin/documents', authenticateToken, upload.single('file'), async
     
     const fileType = path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image';
     
-    const result = db.run(
+    const result = dbRun(
       `INSERT INTO documents 
        (title, description, filename, original_name, file_size, file_type, is_visible) 
        VALUES (?, ?, ?, ?, ?, ?, ?)`,

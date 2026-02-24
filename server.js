@@ -1,0 +1,785 @@
+import express from 'express';
+import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import multer from 'multer';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
+import { v4 as uuidv4 } from 'uuid';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// 🔐 FIXED: Константный JWT_SECRET для всех запросов
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-for-autoschool-mashinka-12345';
+
+// Middleware
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:3001'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Логирование всех запросов
+app.use((req, res, next) => {
+  console.log(`📥 ${new Date().toISOString()} ${req.method} ${req.path}`);
+  next();
+});
+
+// Папки для файлов
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+// MIME types
+function getMimeType(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  const types = {
+    '.pdf': 'application/pdf',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.zip': 'application/zip',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.txt': 'text/plain'
+  };
+  return types[ext] || 'application/octet-stream';
+}
+
+// Настройка Multer
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 100 * 1024 * 1024 // 100MB
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /pdf|jpeg|jpg|png|gif|doc|docx|xls|xlsx|txt|zip/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    
+    if (mimetype && extname) {
+      cb(null, true);
+    } else {
+      cb(new Error('Неподдерживаемый тип файла'));
+    }
+  }
+});
+
+// База данных
+let db;
+
+async function initDatabase() {
+  db = await open({
+    filename: path.join(__dirname, 'database.sqlite'),
+    driver: sqlite3.Database
+  });
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT,
+      filename TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      file_size INTEGER,
+      file_type TEXT,
+      is_visible BOOLEAN DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE TABLE IF NOT EXISTS blocks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      title TEXT,
+      subtitle TEXT,
+      content TEXT,
+      button_text TEXT,
+      button_link TEXT,
+      image TEXT,
+      items TEXT,
+      is_visible BOOLEAN DEFAULT 1,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Заполняем таблицу блоков начальными данными
+  const defaultBlocks = [
+    { name: 'hero', title: 'Мы не просто автошкола.', subtitle: 'Мы — Академия будущих водителей!', content: 'Автошкола "Машинка" предлагает качественное обучение вождению с опытными инструкторами. Получите права быстро и надежно!', button_text: 'Записаться сейчас', button_link: 'contact', is_visible: 1 },
+    { name: 'about', title: 'О нас', subtitle: '', content: 'Мы работаем уже более 10 лет и помогли тысячам учеников получить водительские права. Наши инструкторы — профессионалы с многолетним стажем.', button_text: '', button_link: '', is_visible: 1 },
+    { name: 'advantages', title: 'Почему выбирают нас', subtitle: '', content: '', button_text: '', button_link: '', items: JSON.stringify([{ title: 'Опытные инструкторы', description: 'Стаж работы от 5 лет' },{ title: 'Современные авто', description: 'Новые и безопасные автомобили' },{ title: 'Гибкий график', description: 'Обучение в удобное время' }]), is_visible: 1 },
+    { name: 'courses', title: 'Наши курсы', subtitle: '', content: '', button_text: '', button_link: '', items: JSON.stringify([{ title: 'Категория B', price: 'от 25 000 ₽', description: 'Обучение на легковой автомобиль' },{ title: 'Категория A', price: 'от 15 000 ₽', description: 'Обучение на мотоцикл' },{ title: 'Категория C', price: 'от 35 000 ₽', description: 'Обучение на грузовой автомобиль' }]), is_visible: 1 },
+    { name: 'contact', title: 'Связаться с нами', subtitle: 'Оставьте заявку', content: 'Заполните форму и мы свяжемся с вами в ближайшее время', button_text: 'Отправить заявку', button_link: '', is_visible: 1 },
+    { name: 'footer', title: '', subtitle: '', content: '© 2024 Автошкола "Машинка". Все права защищены.', button_text: '', button_link: '', items: JSON.stringify([{ title: 'Телефон', value: '+7 (999) 123-45-67' },{ title: 'Email', value: 'info@mashinka.ru' },{ title: 'Адрес', value: 'г. Москва, ул. Примерная, д. 1' }]), is_visible: 1 }
+  ];
+
+  for (const block of defaultBlocks) {
+    const exists = await db.get("SELECT id FROM blocks WHERE name = ?", [block.name]);
+    if (!exists) {
+      await db.run(
+        "INSERT INTO blocks (name, title, subtitle, content, button_text, button_link, items, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [block.name, block.title, block.subtitle || '', block.content || '', block.button_text || '', block.button_link || '', block.items || null, block.is_visible || 1]
+      );
+      console.log(`✅ Создан блок: ${block.name}`);
+    }
+  }
+
+  // Проверим все блоки
+  const allBlocks = await db.all("SELECT id, name, is_visible FROM blocks");
+  console.log('📦 Блоки в БД:', allBlocks);
+
+  // Создаем начального администратора (или обновляем пароль)
+  const adminExists = await db.get("SELECT * FROM admin_users WHERE username = 'admin'");
+  const hash = await bcrypt.hash('admin123', 10);
+  
+  if (!adminExists) {
+    await db.run(
+      "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
+      ['admin', hash]
+    );
+    console.log('✅ Создан администратор: admin / admin123');
+  } else {
+    // Обновляем пароль на случай если он неверный
+    await db.run(
+      "UPDATE admin_users SET password_hash = ? WHERE username = 'admin'",
+      [hash]
+    );
+    console.log('🔄 Обновлен пароль администратора: admin / admin123');
+  }
+    
+  console.log('✅ База данных инициализирована');
+  console.log(`🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
+}
+
+initDatabase().catch(console.error);
+
+// 🔐 FIXED: Middleware аутентификации с исправленной проверкой
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  console.log('🔐 Проверка токена:', {
+    hasAuthHeader: !!authHeader,
+    tokenLength: token ? token.length : 0,
+    endpoint: req.path
+  });
+  
+  if (!token) {
+    console.log('❌ Токен отсутствует');
+    return res.status(401).json({ error: 'Токен отсутствует' });
+  }
+  
+  try {
+    // 🔐 FIXED: Синхронная проверка с правильным секретом
+    const user = jwt.verify(token, JWT_SECRET);
+    req.user = user;
+    console.log('✅ Токен верифицирован для пользователя:', user.username);
+    next();
+  } catch (err) {
+    console.error('❌ Ошибка верификации токена:', {
+      error: err.message,
+      token: token.substring(0, 20) + '...'
+    });
+    
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Токен истек' });
+    }
+    
+    return res.status(403).json({ 
+      error: 'Недействительный токен',
+      details: err.message 
+    });
+  }
+};
+
+// 📊 КОРНЕВОЙ МАРШРУТ - ВАЖНО ДОБАВИТЬ
+app.get('/', (req, res) => {
+  res.json({
+    message: '🚀 AutoSchool API Server',
+    version: '1.0.0',
+    status: 'running',
+    endpoints: {
+      api: {
+        documents: 'GET /api/documents',
+        download: 'GET /api/download/:filename',
+        health: 'GET /api/health',
+        login: 'POST /api/login',
+        verifyToken: 'GET /api/verify-token'
+      },
+      admin: {
+        documents: 'GET /api/admin/documents (требуется токен)',
+        upload: 'POST /api/admin/documents (требуется токен)',
+        update: 'PUT /api/admin/documents/:id (требуется токен)',
+        delete: 'DELETE /api/admin/documents/:id (требуется токен)',
+        serverInfo: 'GET /api/server-info (требуется токен)'
+      }
+    },
+    adminCredentials: {
+      username: 'admin',
+      password: 'admin123'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 📊 АУТЕНТИФИКАЦИЯ
+
+// Вход в систему
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    console.log('🔑 Попытка входа:', username);
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Заполните все поля' });
+    }
+    
+    if (!db) {
+      console.error('❌ База данных не инициализирована');
+      return res.status(500).json({ error: 'База данных не готова' });
+    }
+    
+    const user = await db.get(
+      "SELECT * FROM admin_users WHERE username = ?",
+      [username]
+    );
+    
+    console.log('👤 Найден пользователь:', user ? user.username : 'НЕТ');
+    
+    if (!user) {
+      return res.status(401).json({ error: 'Пользователь не найден' });
+    }
+    
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+    console.log('🔐 Пароль верный:', validPassword);
+    
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Неверный пароль' });
+    }
+    
+    // 🔐 FIXED: Используем константный JWT_SECRET
+    const token = jwt.sign(
+      { 
+        id: user.id, 
+        username: user.username
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    console.log('✅ Успешный вход для пользователя:', username);
+    
+    res.json({
+      success: true,
+      token,
+      username: user.username,
+      expiresIn: '24h'
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка при входе:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// 🔐 FIXED: Проверка токена
+app.get('/api/verify-token', authenticateToken, (req, res) => {
+  res.json({
+    success: true,
+    user: req.user,
+    valid: true
+  });
+});
+
+// 📁 УПРАВЛЕНИЕ ДОКУМЕНТАМИ
+
+// Получить все документы (публичный доступ) - БЕЗ аутентификации
+app.get('/api/documents', async (req, res) => {
+  try {
+    const documents = await db.all(
+      "SELECT * FROM documents WHERE is_visible = 1 ORDER BY created_at DESC"
+    );
+    
+    // 🔐 FIXED: Используем относительные URL для фронтенда
+    const docsWithUrls = documents.map(doc => ({
+      ...doc,
+      downloadUrl: `/api/download/${doc.filename}`,
+      is_visible: Boolean(doc.is_visible)
+    }));
+    
+    res.json(docsWithUrls);
+  } catch (error) {
+    console.error('❌ Ошибка получения документов:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// 🔐 FIXED: Получить документы для админки (требуется токен)
+app.get('/api/admin/documents', authenticateToken, async (req, res) => {
+  try {
+    const documents = await db.all(
+      "SELECT * FROM documents ORDER BY created_at DESC"
+    );
+    
+    const docsWithUrls = documents.map(doc => ({
+      ...doc,
+      downloadUrl: `/api/download/${doc.filename}`,
+      is_visible: Boolean(doc.is_visible)
+    }));
+    
+    console.log(`✅ Отправлено ${documents.length} документов для админа`);
+    res.json(docsWithUrls);
+  } catch (error) {
+    console.error('❌ Ошибка получения документов:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Загрузить новый документ
+app.post('/api/admin/documents', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { title, description, is_visible = 'true' } = req.body;
+    const file = req.file;
+    
+    if (!file) {
+      return res.status(400).json({ error: 'Файл не загружен' });
+    }
+    
+    if (!title || title.trim().length === 0) {
+      if (fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
+      }
+      return res.status(400).json({ error: 'Укажите название документа' });
+    }
+    
+    const fileType = path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image';
+    
+    const result = await db.run(
+      `INSERT INTO documents 
+       (title, description, filename, original_name, file_size, file_type, is_visible) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        title.trim(),
+        description ? description.trim() : null,
+        file.filename,
+        file.originalname,
+        file.size,
+        fileType,
+        is_visible === 'true' ? 1 : 0
+      ]
+    );
+    
+    console.log(`✅ Загружен документ: ${title} (${file.originalname})`);
+    
+    res.status(201).json({
+      success: true,
+      id: result.lastID,
+      message: 'Документ успешно загружен'
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка загрузки документа:', error);
+    
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    res.status(500).json({ 
+      error: 'Ошибка при загрузке файла',
+      details: error.message 
+    });
+  }
+});
+
+// Обновить документ
+app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, is_visible } = req.body;
+    
+    const existingDoc = await db.get("SELECT * FROM documents WHERE id = ?", [id]);
+    if (!existingDoc) {
+      return res.status(404).json({ error: 'Документ не найден' });
+    }
+    
+    await db.run(
+      `UPDATE documents 
+       SET title = ?, description = ?, is_visible = ? 
+       WHERE id = ?`,
+      [
+        title ? title.trim() : existingDoc.title,
+        description !== undefined ? description.trim() : existingDoc.description,
+        is_visible !== undefined ? (is_visible === 'true' ? 1 : 0) : existingDoc.is_visible,
+        id
+      ]
+    );
+    
+    console.log(`✅ Обновлен документ ID: ${id}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Документ обновлен' 
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка обновления документа:', error);
+    res.status(500).json({ error: 'Ошибка при обновлении' });
+  }
+});
+
+// Удалить документ
+app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const doc = await db.get("SELECT * FROM documents WHERE id = ?", [id]);
+    if (!doc) {
+      return res.status(404).json({ error: 'Документ не найден' });
+    }
+    
+    const filePath = path.join(uploadsDir, doc.filename);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    
+    await db.run("DELETE FROM documents WHERE id = ?", [id]);
+    
+    console.log(`🗑️ Удален документ ID: ${id} (${doc.title})`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Документ удален' 
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка удаления документа:', error);
+    res.status(500).json({ error: 'Ошибка при удалении' });
+  }
+});
+
+// 📷 ЗАГРУЗКА ИЗОБРАЖЕНИЙ ДЛЯ БЛОКОВ
+app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('image'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: 'Файл не загружен' });
+    }
+
+    res.json({
+      success: true,
+      filename: file.filename,
+      url: `/uploads/${file.filename}`
+    });
+  } catch (error) {
+    console.error('❌ Ошибка загрузки изображения:', error);
+    res.status(500).json({ error: 'Ошибка при загрузке' });
+  }
+});
+
+// 📦 УПРАВЛЕНИЕ БЛОКАМИ
+
+// Получить все блоки (публичный доступ)
+app.get('/api/blocks', async (req, res) => {
+  try {
+    const blocks = await db.all("SELECT * FROM blocks WHERE is_visible = 1");
+    const blocksData = blocks.map(block => ({
+      ...block,
+      items: block.items ? JSON.parse(block.items) : null,
+      is_visible: Boolean(block.is_visible)
+    }));
+    res.json(blocksData);
+  } catch (error) {
+    console.error('❌ Ошибка получения блоков:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Получить блок по имени (публичный доступ)
+app.get('/api/blocks/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const block = await db.get("SELECT * FROM blocks WHERE name = ? AND is_visible = 1", [name]);
+    if (!block) {
+      return res.status(404).json({ error: 'Блок не найден' });
+    }
+    res.json({
+      ...block,
+      items: block.items ? JSON.parse(block.items) : null,
+      is_visible: Boolean(block.is_visible)
+    });
+  } catch (error) {
+    console.error('❌ Ошибка получения блока:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Получить все блоки для админки
+app.get('/api/admin/blocks', authenticateToken, async (req, res) => {
+  try {
+    const blocks = await db.all("SELECT * FROM blocks ORDER BY id");
+    const blocksData = blocks.map(block => ({
+      ...block,
+      items: block.items ? JSON.parse(block.items) : null,
+      is_visible: Boolean(block.is_visible)
+    }));
+    res.json(blocksData);
+  } catch (error) {
+    console.error('❌ Ошибка получения блоков:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Обновить блок
+app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, subtitle, content, button_text, button_link, image, items, is_visible } = req.body;
+
+    const existingBlock = await db.get("SELECT * FROM blocks WHERE id = ?", [id]);
+    if (!existingBlock) {
+      return res.status(404).json({ error: 'Блок не найден' });
+    }
+
+    const itemsJson = items ? JSON.stringify(items) : existingBlock.items;
+
+    await db.run(
+      `UPDATE blocks 
+       SET title = ?, subtitle = ?, content = ?, button_text = ?, button_link = ?, image = ?, items = ?, is_visible = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        title !== undefined ? title : existingBlock.title,
+        subtitle !== undefined ? subtitle : existingBlock.subtitle,
+        content !== undefined ? content : existingBlock.content,
+        button_text !== undefined ? button_text : existingBlock.button_text,
+        button_link !== undefined ? button_link : existingBlock.button_link,
+        image !== undefined ? image : existingBlock.image,
+        itemsJson,
+        is_visible !== undefined ? (is_visible ? 1 : 0) : existingBlock.is_visible,
+        id
+      ]
+    );
+
+    console.log(`✅ Обновлен блок ID: ${id} (${existingBlock.name})`);
+
+    res.json({ success: true, message: 'Блок обновлен' });
+  } catch (error) {
+    console.error('❌ Ошибка обновления блока:', error);
+    res.status(500).json({ error: 'Ошибка при обновлении' });
+  }
+});
+
+// 📥 РАБОТА С ФАЙЛАМИ
+
+// 🔐 FIXED: Скачивание файла (публичный доступ)
+app.get('/api/download/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(uploadsDir, filename);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Файл не найден' });
+    }
+    
+    const mimeType = getMimeType(filename);
+    const fileSize = fs.statSync(filePath).size;
+    const originalName = req.query.original || filename;
+    
+    console.log(`📥 Скачивание файла: ${filename} -> ${originalName}`);
+    
+    // ВСЕГДА скачиваем файл
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Length', fileSize);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(originalName)}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+    
+    fileStream.on('error', (error) => {
+      console.error('❌ Ошибка чтения файла:', error);
+      res.status(500).end();
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка при скачивании файла:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// 📊 СТАТИСТИКА
+
+// Информация о сервере (требуется токен)
+app.get('/api/server-info', authenticateToken, async (req, res) => {
+  try {
+    const docCount = await db.get("SELECT COUNT(*) as count FROM documents");
+    const visibleCount = await db.get("SELECT COUNT(*) as count FROM documents WHERE is_visible = 1");
+    
+    let uploadsSize = 0;
+    if (fs.existsSync(uploadsDir)) {
+      const files = fs.readdirSync(uploadsDir);
+      for (const file of files) {
+        const stat = fs.statSync(path.join(uploadsDir, file));
+        if (stat.isFile()) uploadsSize += stat.size;
+      }
+    }
+    
+    res.json({
+      documents: {
+        total: docCount.count,
+        visible: visibleCount.count,
+        hidden: docCount.count - visibleCount.count
+      },
+      storage: {
+        uploads: uploadsSize
+      },
+      server: {
+        uptime: process.uptime(),
+        nodeVersion: process.version
+      }
+    });
+  } catch (error) {
+    console.error('❌ Ошибка получения статистики:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// 🔐 FIXED: Проверка здоровья сервера
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    jwtSecret: JWT_SECRET ? 'Установлен' : 'Дефолтный'
+  });
+});
+
+// 📁 СТАТИЧЕСКИЕ ФАЙЛЫ
+app.use('/uploads', express.static(uploadsDir));
+
+// 🔐 FIXED: Логирование всех запросов (для отладки)
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  next();
+});
+
+// Обработка ошибок 404 для API
+app.use('/api/*', (req, res) => {
+  console.log(`❌ API 404: ${req.method} ${req.path}`);
+  res.status(404).json({
+    error: 'API маршрут не найден',
+    path: req.path
+  });
+});
+
+// Общая обработка ошибок 404
+app.use((req, res) => {
+  console.log(`❌ 404: ${req.method} ${req.path}`);
+  
+  // Если клиент ожидает HTML (React приложение)
+  if (req.accepts('html')) {
+    return res.status(404).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>404 - Страница не найдена</title>
+        <style>
+          body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+          h1 { color: #333; }
+          .api-info { background: #f5f5f5; padding: 20px; border-radius: 5px; margin: 20px auto; max-width: 600px; }
+          .endpoint { margin: 5px 0; }
+        </style>
+      </head>
+      <body>
+        <h1>🚀 AutoSchool API Server</h1>
+        <p>Это серверная часть приложения AutoSchool.</p>
+        <div class="api-info">
+          <h3>Доступные эндпоинты:</h3>
+          <div class="endpoint"><strong>GET /api/documents</strong> - Публичные документы</div>
+          <div class="endpoint"><strong>GET /api/download/:filename</strong> - Скачивание файлов</div>
+          <div class="endpoint"><strong>POST /api/login</strong> - Вход в систему</div>
+          <div class="endpoint"><strong>GET /api/health</strong> - Проверка здоровья сервера</div>
+        </div>
+        <p>Фронтенд приложения доступен по адресу: <a href="http://localhost:3000">http://localhost:3000</a></p>
+      </body>
+      </html>
+    `);
+  }
+  
+  // Если клиент ожидает JSON
+  if (req.accepts('json')) {
+    return res.status(404).json({
+      error: 'Маршрут не найден',
+      path: req.path,
+      availableEndpoints: {
+        root: 'GET /',
+        documents: 'GET /api/documents',
+        download: 'GET /api/download/:filename',
+        health: 'GET /api/health'
+      }
+    });
+  }
+  
+  // По умолчанию текст
+  res.status(404).send('Маршрут не найден');
+});
+
+// Глобальный обработчик ошибок
+app.use((err, req, res, next) => {
+  console.error('❌ Глобальная ошибка:', err);
+  
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'Файл слишком большой. Максимум 20MB' });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+  
+  res.status(500).json({
+    error: 'Внутренняя ошибка сервера',
+    message: err.message
+  });
+});
+
+// 🔐 FIXED: Запуск сервера с информацией о JWT
+app.listen(PORT, () => {
+  console.log(`
+🚀 Сервер запущен на http://localhost:${PORT}
+📁 Файлы хранятся в: ${uploadsDir}
+📊 API доступен по: http://localhost:${PORT}/api
+🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}
+👤 Админ: admin / admin123
+⚡ Примеры запросов:
+  GET  http://localhost:${PORT}/ - Информация о сервере
+  GET  http://localhost:${PORT}/api/documents - Публичные документы
+  GET  http://localhost:${PORT}/api/health - Проверка здоровья
+  POST http://localhost:${PORT}/api/login - Вход в систему
+  `);
+});

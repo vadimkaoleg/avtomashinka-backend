@@ -6,8 +6,7 @@ import { fileURLToPath } from 'url';
 import multer from 'multer';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -88,13 +87,11 @@ const upload = multer({
 // База данных
 let db;
 
-async function initDatabase() {
-  db = await open({
-    filename: path.join(__dirname, 'database.sqlite'),
-    driver: sqlite3.Database
-  });
+function initDatabase() {
+  const dbPath = path.join(__dirname, 'database.sqlite');
+  db = new Database(dbPath);
 
-  await db.exec(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS documents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -140,9 +137,9 @@ async function initDatabase() {
   ];
 
   for (const block of defaultBlocks) {
-    const exists = await db.get("SELECT id FROM blocks WHERE name = ?", [block.name]);
+    const exists = db.get("SELECT id FROM blocks WHERE name = ?", [block.name]);
     if (!exists) {
-      await db.run(
+      db.run(
         "INSERT INTO blocks (name, title, subtitle, content, button_text, button_link, items, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [block.name, block.title, block.subtitle || '', block.content || '', block.button_text || '', block.button_link || '', block.items || null, block.is_visible || 1]
       );
@@ -151,22 +148,22 @@ async function initDatabase() {
   }
 
   // Проверим все блоки
-  const allBlocks = await db.all("SELECT id, name, is_visible FROM blocks");
+  const allBlocks = db.all("SELECT id, name, is_visible FROM blocks");
   console.log('📦 Блоки в БД:', allBlocks);
 
   // Создаем начального администратора (или обновляем пароль)
-  const adminExists = await db.get("SELECT * FROM admin_users WHERE username = 'admin'");
-  const hash = await bcrypt.hash('admin123', 10);
+  const adminExists = db.get("SELECT * FROM admin_users WHERE username = 'admin'");
+  const hash = bcrypt.hashSync('admin123', 10);
   
   if (!adminExists) {
-    await db.run(
+    db.run(
       "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
       ['admin', hash]
     );
     console.log('✅ Создан администратор: admin / admin123');
   } else {
     // Обновляем пароль на случай если он неверный
-    await db.run(
+    db.run(
       "UPDATE admin_users SET password_hash = ? WHERE username = 'admin'",
       [hash]
     );
@@ -177,7 +174,7 @@ async function initDatabase() {
   console.log(`🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
 }
 
-initDatabase().catch(console.error);
+initDatabase();
 
 // 🔐 FIXED: Middleware аутентификации с исправленной проверкой
 const authenticateToken = (req, res, next) => {
@@ -266,7 +263,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(500).json({ error: 'База данных не готова' });
     }
     
-    const user = await db.get(
+    const user = db.get(
       "SELECT * FROM admin_users WHERE username = ?",
       [username]
     );
@@ -323,7 +320,7 @@ app.get('/api/verify-token', authenticateToken, (req, res) => {
 // Получить все документы (публичный доступ) - БЕЗ аутентификации
 app.get('/api/documents', async (req, res) => {
   try {
-    const documents = await db.all(
+    const documents = db.all(
       "SELECT * FROM documents WHERE is_visible = 1 ORDER BY created_at DESC"
     );
     
@@ -344,7 +341,7 @@ app.get('/api/documents', async (req, res) => {
 // 🔐 FIXED: Получить документы для админки (требуется токен)
 app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   try {
-    const documents = await db.all(
+    const documents = db.all(
       "SELECT * FROM documents ORDER BY created_at DESC"
     );
     
@@ -381,7 +378,7 @@ app.post('/api/admin/documents', authenticateToken, upload.single('file'), async
     
     const fileType = path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image';
     
-    const result = await db.run(
+    const result = db.run(
       `INSERT INTO documents 
        (title, description, filename, original_name, file_size, file_type, is_visible) 
        VALUES (?, ?, ?, ?, ?, ?, ?)`,

@@ -1028,17 +1028,30 @@ async function syncFilesFromFTP() {
     // Читаем список файлов из папки uploads/named (имена файлов)
     let nameMap = {};
     try {
-      await client.cd(FTP_CONFIG.remotePath + '/named');
-      const namedFiles = await client.list();
+      // Пробуем разные варианты пути
+      const namedPath = FTP_CONFIG.remotePath + '/named';
+      console.log(`   Пробуем путь: ${namedPath}`);
+      
+      let namedFiles;
+      try {
+        await client.cd(namedPath);
+        namedFiles = await client.list();
+      } catch {
+        // Пробуем без cd - сразу list
+        namedFiles = await client.list(namedPath);
+      }
+      
       console.log(`📂 Файлов с именами: ${namedFiles.length}`);
       
       for (const nf of namedFiles) {
+        // Пропускаем если это директория
+        if (nf.type === 'd') continue;
         // Имя файла - это UUID, содержимое - оригинальное название
         const uuid = nf.name.replace(/\.[^/.]+$/, '');
         nameMap[uuid] = nf.name;
       }
     } catch (e) {
-      console.log('⚠️ Папка uploads/named не найдена');
+      console.log('⚠️ Папка uploads/named не найдена:', e.message);
     }
     
     let downloaded = 0;

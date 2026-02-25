@@ -948,24 +948,20 @@ app.get('/api/download/:filename', async (req, res) => {
     
     const mimeType = getMimeType(filename);
     
-    // Предпросмотр (inline) или скачивание (attachment)
-    if (mode === 'preview') {
-      // Для предпросмотра - отдаем напрямую
-      res.setHeader('Content-Type', mimeType);
-      res.setHeader('Content-Length', stat.size);
-      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(originalName)}"`);
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      const fileBuffer = fs.readFileSync(filePath);
-      res.send(fileBuffer);
-    } else {
-      // Для скачивания - используем res.download
-      res.download(filePath, originalName, {
-        headers: {
-          'Content-Type': mimeType,
-          'Cache-Control': 'no-cache, no-store, must-revalidate'
-        }
-      });
-    }
+    // Всегда отдаем файл как буфер с правильными заголовками
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Content-Disposition', mode === 'preview' 
+      ? `inline; filename="${encodeURIComponent(originalName)}"` 
+      : `attachment; filename="${encodeURIComponent(originalName)}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Content-Transfer-Encoding', 'binary');
+    
+    // Читаем файл и отдаем
+    const fileBuffer = fs.readFileSync(filePath);
+    res.end(fileBuffer);
     
   } catch (error) {
     console.error('❌ Ошибка при скачивании файла:', error.message);

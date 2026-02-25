@@ -959,10 +959,13 @@ app.get('/api/download/:filename', async (req, res) => {
     }
     
     const mimeType = getMimeType(filename);
-    const fileSize = fs.statSync(filePath).size;
     const originalName = req.query.original || filename;
     
     console.log(`📥 Файл: ${filename}, mode: ${mode}`);
+    
+    // Читаем файл полностью в буфер (надежнее для бинарных файлов)
+    const fileBuffer = fs.readFileSync(filePath);
+    const fileSize = fileBuffer.length;
     
     // Предпросмотр (inline) или скачивание (attachment)
     const disposition = mode === 'preview' ? 'inline' : 'attachment';
@@ -974,13 +977,8 @@ app.get('/api/download/:filename', async (req, res) => {
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.pipe(res);
-    
-    fileStream.on('error', (error) => {
-      console.error('❌ Ошибка чтения файла:', error);
-      res.status(500).end();
-    });
+    // Отдаем буфер напрямую
+    res.send(fileBuffer);
     
   } catch (error) {
     console.error('❌ Ошибка при скачивании файла:', error);
@@ -1065,8 +1063,12 @@ app.get('/uploads/:filename', async (req, res) => {
       console.log(`✅ Файл скачан с FTP: ${filename}`);
     }
     
-    // Отдаем файл
-    res.sendFile(filePath);
+    const mimeType = getMimeType(filename);
+    const fileBuffer = fs.readFileSync(filePath);
+    
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Length', fileBuffer.length);
+    res.send(fileBuffer);
   } catch (error) {
     console.error('❌ Ошибка статики:', error);
     res.status(500).send('Ошибка сервера');

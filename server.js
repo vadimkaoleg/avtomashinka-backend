@@ -110,9 +110,17 @@ async function initDatabase() {
       file_size INTEGER,
       file_type TEXT,
       is_visible INTEGER DEFAULT 1,
+      sort_order INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Добавляем колонку sort_order если её нет (миграция)
+  try {
+    db.run("ALTER TABLE documents ADD COLUMN sort_order INTEGER DEFAULT 0");
+  } catch (e) {
+    // Колонка уже существует
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS admin_users (
@@ -371,7 +379,7 @@ app.get('/api/verify-token', authenticateToken, (req, res) => {
 app.get('/api/documents', async (req, res) => {
   try {
     const documents = dbAll(
-      "SELECT * FROM documents WHERE is_visible = 1 ORDER BY created_at DESC"
+      "SELECT * FROM documents WHERE is_visible = 1 ORDER BY sort_order ASC, created_at DESC"
     );
     
     // 🔐 FIXED: Используем относительные URL для фронтенда
@@ -392,7 +400,7 @@ app.get('/api/documents', async (req, res) => {
 app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   try {
     const documents = dbAll(
-      "SELECT * FROM documents ORDER BY created_at DESC"
+      "SELECT * FROM documents ORDER BY sort_order ASC, created_at DESC"
     );
     
     const docsWithUrls = documents.map(doc => ({
@@ -409,6 +417,32 @@ app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   }
 });
 
+// Обновить порядок документов
+app.put('/api/admin/documents/reorder', authenticateToken, async (req, res) => {
+  try {
+    const { order } = req.body; // Массив id в нужном порядке: [3, 1, 2]
+    
+    if (!Array.isArray(order)) {
+      return res.status(400).json({ error: 'Неверный формат данных' });
+    }
+    
+    // Обновляем sort_order для каждого документа
+    order.forEach((id, index) => {
+      dbRun("UPDATE documents SET sort_order = ? WHERE id = ?", [index, id]);
+    });
+    
+    console.log(`✅ Обновлен порядок документов: ${order.join(', ')}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Порядок документов обновлен' 
+    });
+  } catch (error) {
+    console.error('❌ Ошибка обновления порядка:', error);
+    res.status(500).json({ error: 'Ошибка при обновлении порядка' });
+  }
+});
+
 // Загрузить документы (один или несколько)
 app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, res) => {
   try {
@@ -418,7 +452,7 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
     if (!files || files.length === 0) {
       return res.status(400).json({ error: 'Файл не загружен' });
     }
-    
+
     // Фильтруем только файлы (не другие поля)
     const fileList = files.filter(f => f.fieldName === 'file' || !f.fieldName);
     
@@ -503,10 +537,10 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
         id
       ]
     );
-    
+
     console.log(`✅ Обновлен документ ID: ${id}`);
     
-    res.json({ 
+    res.json({
       success: true, 
       message: 'Документ обновлен' 
     });

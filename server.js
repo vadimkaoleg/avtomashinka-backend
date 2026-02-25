@@ -126,6 +126,62 @@ async function uploadToFTP(localFilePath, fileName) {
   }
 }
 
+// Функция скачивания файла с FTP в буфер (без записи на диск)
+async function downloadFileToBuffer(fileName) {
+  const client = new FTPClient();
+  
+  try {
+    console.log(`   📥 Скачивание в буфер с FTP: ${fileName}...`);
+    
+    client.ftp.verbose = false;
+    
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    
+    // 🔧 ВАЖНО: Переключаем в бинарный режим
+    await client.send('TYPE I');
+    
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+    } catch {
+      console.log(`   ⚠️ Не удалось войти в папку на FTP`);
+      return null;
+    }
+    
+    // 📥 Скачиваем файл в буфер
+    const buffer = await client.downloadToBuffer(fileName);
+    
+    if (!buffer || buffer.length === 0) {
+      console.error(`   ❌ Буфер пустой для: ${fileName}`);
+      return null;
+    }
+    
+    // 🔍 Проверяем заголовок
+    const headerBytes = buffer.slice(0, 10);
+    const headerStr = headerBytes.toString('ascii').substring(0, 5);
+    console.log(`   🔍 Заголовок из буфера: "${headerStr}" (hex: ${headerBytes.toString('hex').substring(0, 20)})`);
+    
+    if (fileName.toLowerCase().endsWith('.pdf')) {
+      if (!headerStr.startsWith('%PDF')) {
+        console.error(`   ❌ PDF поврежден в буфере! Заголовок: "${headerStr}"`);
+        return null;
+      }
+      console.log(`   ✅ PDF заголовок корректный в буфере`);
+    }
+    
+    console.log(`   ✅ Файл скачан в буфер: ${buffer.length} bytes`);
+    return buffer;
+    
+  } catch (error) {
+    console.error(`   ❌ Ошибка скачивания в буфер: ${error.message}`);
+    return null;
+  } finally {
+    try {
+      await client.close();
+    } catch {}
+  }
+}
+
 // Функция скачивания файла с FTP (если нет локально)
 // Всегда пытается подключиться, не зависит от ftpEnabled
 async function downloadFromFTP(fileName, localPath) {
@@ -981,30 +1037,59 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
 // 🔐 FIXED: Скачивание/предпросмотр файла (публичный доступ)
 // ?mode=preview - для предпросмотра в браузере (inline)
 // ?mode=download или без параметра - для скачивания (attachment)
+// ?direct=1 - читать напрямую с FTP без записи на диск
 app.get('/api/download/:filename', async (req, res) => {
   const filename = req.params.filename;
   const mode = req.query.mode || 'download';
+  const direct = req.query.direct === '1';
   const originalName = req.query.original || filename;
   const filePath = path.join(uploadsDir, filename);
   
   try {
-    console.log(`📥 Скачивание файла: ${filename} (mode: ${mode})`);
+    console.log(`📥 Скачивание файла: ${filename} (mode: ${mode}, direct: ${direct})`);
     
-    // Пробуем скачать с FTP если нет локально
-    if (!fs.existsSync(filePath)) {
-      console.log(`   📥 Файла нет локально, пробуем с FTP...`);
-      const downloaded = await downloadFromFTP(filename, filePath);
-      if (!downloaded) {
-        console.log(`❌ Файл не найден: ${filename}`);
+    let fileBuffer;
+    
+    if (direct) {
+      // 📥 Читаем файл напрямую с FTP в буфер (без записи на диск)
+      console.log(`   📥 Читаем напрямую с FTP...`);
+      fileBuffer = await downloadFileToBuffer(filename);
+      if (!fileBuffer) {
+        console.log(`❌ Файл не найден на FTP: ${filename}`);
         return res.status(404).json({ error: 'Файл не найден' });
       }
+      console.log(`   ✅ Скачано с FTP: ${fileBuffer.length} bytes`);
     } else {
-      console.log(`   📄 Файл найден локально: ${filename}`);
+      // Пробуем скачать с FTP если нет локально
+      if (!fs.existsSync(filePath)) {
+        console.log(`   📥 Файла нет локально, пробуем с FTP...`);
+        const downloaded = await downloadFromFTP(filename, filePath);
+        if (!downloaded) {
+          console.log(`❌ Файл не найден: ${filename}`);
+          return res.status(404).json({ error: 'Файл не найден' });
+        }
+      } else {
+        console.log(`   📄 Файл найден локально: ${filename}`);
+      }
+      
+      // Читаем файл напрямую в буфер (бинарный режим)
+      fileBuffer = fs.readFileSync(filePath);
+      console.log(`   📄 Размер файла: ${fileBuffer.length} bytes`);
     }
     
-    // Читаем файл напрямую в буфер (бинарный режим)
-    const fileBuffer = fs.readFileSync(filePath);
-    console.log(`   📄 Размер файла: ${fileBuffer.length} bytes`);
+    // 🔍 ДЕБАГ: Проверяем заголовок файла перед отдачей
+    const headerBytes = fileBuffer.slice(0, 10);
+    const headerStr = headerBytes.toString('ascii').substring(0, 5);
+    console.log(`   🔍 Заголовок файла: "${headerStr}" (hex: ${headerBytes.toString('hex').substring(0, 20)})`);
+    
+    // Проверяем, что PDF файл начинается с %PDF
+    if (filename.toLowerCase().endsWith('.pdf')) {
+      if (!headerStr.startsWith('%PDF')) {
+        console.error(`   ❌ ОШИБКА: PDF файл поврежден! Ожидался заголовок "%PDF", получен: "${headerStr}"`);
+        return res.status(500).json({ error: 'Файл повреждён на сервере' });
+      }
+      console.log(`   ✅ PDF заголовок корректный`);
+    }
     
     const mimeType = getMimeType(filename);
     
@@ -1019,7 +1104,7 @@ app.get('/api/download/:filename', async (req, res) => {
     res.setHeader('Expires', '0');
     
     // Отдаем файл напрямую через end() - это гарантирует бинарную целостность
-    console.log(`   📤 Отдаем файл напрямую: ${filename}`);
+    console.log(`   📤 Отдаем файл клиенту: ${filename}`);
     res.end(fileBuffer);
     console.log(`   ✅ Файл успешно отдан`);
     

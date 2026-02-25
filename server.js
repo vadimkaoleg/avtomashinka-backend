@@ -410,7 +410,7 @@ app.get('/api/admin/documents', authenticateToken, async (req, res) => {
 });
 
 // Загрузить документы (один или несколько)
-app.post('/api/admin/documents', authenticateToken, upload.array('files', 20), async (req, res) => {
+app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, res) => {
   try {
     const { title, description, is_visible = 'true' } = req.body;
     const files = req.files;
@@ -419,13 +419,18 @@ app.post('/api/admin/documents', authenticateToken, upload.array('files', 20), a
       return res.status(400).json({ error: 'Файл не загружен' });
     }
     
-    // Если передан один файл - используем title для него
-    // Если несколько файлов - title используется как префикс
+    // Фильтруем только файлы (не другие поля)
+    const fileList = files.filter(f => f.fieldName === 'file' || !f.fieldName);
+    
+    if (fileList.length === 0) {
+      return res.status(400).json({ error: 'Файл не найден в запросе' });
+    }
+    
     const uploadedIds = [];
     
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const fileTitle = files.length === 1 
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      const fileTitle = fileList.length === 1 
         ? (title || file.originalname.replace(/\.[^/.]+$/, ''))
         : `${title || file.originalname.replace(/\.[^/.]+$/, '')} ${i + 1}`;
       

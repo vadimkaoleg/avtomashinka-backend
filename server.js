@@ -1053,18 +1053,13 @@ async function syncFilesFromFTP() {
       // Title - это имя файла без расширения
       const title = originalName.replace(/\.[^/.]+$/, '') || 'Документ';
       
-      db.prepare(`
-        INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        title,
-        '',
-        file.name,
-        originalName,
-        file.size,
-        'pdf',
-        1
+      console.log(`   → title="${title}", filename="${file.name}", original="${originalName}", size=${file.size}`);
+      
+      db.run(
+        `INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [title, '', file.name, originalName, file.size, 'pdf', 1]
       );
+      saveDatabase();
       console.log(`📝 Добавлен в БД: ${file.name} (${title})`);
       added++;
     }

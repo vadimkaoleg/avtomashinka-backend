@@ -329,20 +329,20 @@ async function initDatabase() {
 
   // Создаем начального администратора (или обновляем пароль)
   const adminResult = db.exec("SELECT * FROM admin_users WHERE username = 'admin'");
-  const hash = bcrypt.hashSync('admin123', 10);
+  const hash = bcrypt.hashSync('e67bBjNy', 10);
   
   if (adminResult.length === 0 || adminResult[0].values.length === 0) {
     db.run(
       "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
       ['admin', hash]
     );
-    console.log('✅ Создан администратор: admin / admin123');
+    console.log('✅ Создан администратор: admin / e67bBjNy');
   } else {
     db.run(
       "UPDATE admin_users SET password_hash = ? WHERE username = 'admin'",
       [hash]
     );
-    console.log('🔄 Обновлен пароль администратора: admin / admin123');
+    console.log('🔄 Обновлен пароль администратора: admin / e67bBjNy');
   }
 
   // Сохраняем БД

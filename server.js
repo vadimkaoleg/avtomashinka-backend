@@ -939,50 +939,62 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
 // 🔐 FIXED: Скачивание/предпросмотр файла (публичный доступ)
 // ?mode=preview - для предпросмотра в браузере (inline)
 // ?mode=download или без параметра - для скачивания (attachment)
+// Всегда получаем файл напрямую с FTP в память и отдаем пользователю
 app.get('/api/download/:filename', async (req, res) => {
+  const client = new FTPClient();
+  const filename = req.params.filename;
+  const mode = req.query.mode || 'download';
+  const originalName = req.query.original || filename;
+  
   try {
-    const filename = req.params.filename;
-    const filePath = path.join(uploadsDir, filename);
-    const mode = req.query.mode || 'download';
+    console.log(`📥 Скачивание файла: ${filename} (mode: ${mode})`);
     
-    // 📥 Если файла нет локально - пробуем скачать с FTP (без проверки ftpEnabled)
-    if (!fs.existsSync(filePath)) {
-      console.log(`📥 Файл не найден локально: ${filename}, пробуем с FTP...`);
-      const downloaded = await downloadFromFTP(filename, filePath);
-      if (!downloaded) {
-        console.log(`❌ Файл не найден ни локально, ни на FTP: ${filename}`);
-        return res.status(404).json({ error: 'Файл не найден' });
-      }
-      console.log(`✅ Файл восстановлен с FTP: ${filename}`);
-    } else {
-      console.log(`📄 Файл найден локально: ${filename}`);
+    // Всегда получаем файл напрямую с FTP (не из локальной копии)
+    client.ftp.verbose = false;
+    
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.pasv();
+    await client.binary();
+    
+    await client.cd(FTP_CONFIG.remotePath);
+    
+    // Проверяем что файл существует
+    const fileList = await client.list();
+    const fileInfo = fileList.find(f => f.name === filename);
+    
+    if (!fileInfo) {
+      console.log(`❌ Файл не найден на FTP: ${filename}`);
+      return res.status(404).json({ error: 'Файл не найден' });
     }
     
+    console.log(`   ✅ Файл найден на FTP: ${filename} (${fileInfo.size} bytes)`);
+    
+    // Скачиваем в буфер напрямую
+    const fileBuffer = await client.downloadToBuffer(filename);
     const mimeType = getMimeType(filename);
-    const originalName = req.query.original || filename;
     
-    console.log(`📥 Файл: ${filename}, mode: ${mode}`);
-    
-    // Читаем файл полностью в буфер (надежнее для бинарных файлов)
-    const fileBuffer = fs.readFileSync(filePath);
-    const fileSize = fileBuffer.length;
+    console.log(`   📤 Отдаем файл: ${fileBuffer.length} bytes`);
     
     // Предпросмотр (inline) или скачивание (attachment)
     const disposition = mode === 'preview' ? 'inline' : 'attachment';
     
     res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Length', fileSize);
+    res.setHeader('Content-Length', fileBuffer.length);
     res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(originalName)}"`);
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     
-    // Отдаем буфер напрямую
     res.send(fileBuffer);
     
   } catch (error) {
-    console.error('❌ Ошибка при скачивании файла:', error);
+    console.error('❌ Ошибка при скачивании файла:', error.message);
     res.status(500).json({ error: 'Ошибка сервера' });
+  } finally {
+    try {
+      await client.close();
+    } catch {}
   }
 });
 
@@ -1003,7 +1015,7 @@ app.get('/api/server-info', authenticateToken, async (req, res) => {
       }
     }
     
-    res.json({
+    res.json({ 
       documents: {
         total: docCount.count,
         visible: visibleCount.count,

@@ -62,17 +62,13 @@ async function uploadToFTP(localFilePath, fileName) {
   try {
     console.log(`🔌 Подключение к FTP ${FTP_CONFIG.host}:${FTP_CONFIG.port}...`);
     
-    // Явно устанавливаем пассивный режим
     client.ftp.verbose = false;
     
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    
-    // Устанавливаем пассивный режим и бинарный тип передачи
-    await client.pasv();
     await client.binary();
     
-    console.log(`✅ FTP подключение установлено (passive + binary mode)`);
+    console.log(`✅ FTP подключение установлено (binary mode)`);
     
     // Проверяем/создаем папку на FTP
     try {
@@ -122,12 +118,9 @@ async function downloadFromFTP(fileName, localPath) {
     
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    
-    // Устанавливаем пассивный режим и бинарный тип передачи
-    await client.pasv();
     await client.binary();
     
-    console.log(`   ✅ FTP подключен (passive + binary mode)`);
+    console.log(`   ✅ FTP подключен (binary mode)`);
     
     // Проверяем список файлов на FTP для отладки
     try {
@@ -188,9 +181,6 @@ async function deleteFromFTP(fileName) {
     
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    
-    // Устанавливаем пассивный режим и бинарный тип передачи
-    await client.pasv();
     await client.binary();
     
     try {

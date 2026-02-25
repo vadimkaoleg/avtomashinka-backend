@@ -44,7 +44,7 @@ const FTP_CONFIG = {
   port: parseInt(process.env.FTP_PORT) || 21,
   user: process.env.FTP_USER || 'cl433989_render',
   password: process.env.FTP_PASS || 'jA1yU5cC9w',
-  remotePath: process.env.FTP_PATH || 'uploads'
+  remotePath: process.env.FTP_PATH || 'uploads/named'
 };
 
 // Флаг для отключения FTP если недоступен
@@ -1020,10 +1020,10 @@ async function syncFilesFromFTP() {
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     
-    // Читаем список файлов из папки uploads (основные файлы)
-    await client.cd(FTP_CONFIG.remotePath);
+    // Читаем список файлов из папки uploads/named (основные файлы)
+    await client.cd(FTP_CONFIG.remotePath + '/named');
     const fileList = await client.list();
-    console.log(`📂 Файлов на FTP: ${fileList.length}`);
+    console.log(`📂 Файлов на FTP (uploads/named): ${fileList.length}`);
     
     // Используем имена файлов напрямую (без UUID)
     // Файлы уже имеют нормальные имена на FTP

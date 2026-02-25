@@ -949,22 +949,23 @@ app.get('/api/download/:filename', async (req, res) => {
     const mimeType = getMimeType(filename);
     
     // Предпросмотр (inline) или скачивание (attachment)
-    const disposition = mode === 'preview' ? 'inline' : 'attachment';
-    
-    res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Length', stat.size);
-    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(originalName)}"`);
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    
-    // Используем createReadStream для надежной передачи
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.on('error', (error) => {
-      console.error('❌ Ошибка чтения файла:', error);
-      res.status(500).end();
-    });
-    fileStream.pipe(res);
+    if (mode === 'preview') {
+      // Для предпросмотра - отдаем напрямую
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Length', stat.size);
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(originalName)}"`);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      const fileBuffer = fs.readFileSync(filePath);
+      res.send(fileBuffer);
+    } else {
+      // Для скачивания - используем res.download
+      res.download(filePath, originalName, {
+        headers: {
+          'Content-Type': mimeType,
+          'Cache-Control': 'no-cache, no-store, must-revalidate'
+        }
+      });
+    }
     
   } catch (error) {
     console.error('❌ Ошибка при скачивании файла:', error.message);

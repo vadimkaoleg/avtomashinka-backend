@@ -987,14 +987,14 @@ app.get('/api/health', (req, res) => {
 });
 
 // 📁 СТАТИЧЕСКИЕ ФАЙЛЫ (с поддержкой FTP)
-app.use('/uploads', async (req, res, next) => {
+app.get('/uploads/:filename', async (req, res) => {
   try {
-    const filename = path.basename(req.path);
+    const filename = req.params.filename;
     const filePath = path.join(uploadsDir, filename);
     
     // 📥 Если файла нет локально - пробуем скачать с FTP
     if (!fs.existsSync(filePath)) {
-      console.log(`📥 Файл не найден локально (static), пробуем с FTP: ${filename}`);
+      console.log(`📥 Файл не найден локально (uploads), пробуем с FTP: ${filename}`);
       const downloaded = await downloadFromFTP(filename, filePath);
       if (!downloaded) {
         return res.status(404).send('Файл не найден');
@@ -1002,11 +1002,49 @@ app.use('/uploads', async (req, res, next) => {
       console.log(`✅ Файл скачан с FTP: ${filename}`);
     }
     
-    // Продолжаем стандартную обработку
-    express.static(uploadsDir)(req, res, next);
+    // Отдаем файл
+    res.sendFile(filePath);
   } catch (error) {
     console.error('❌ Ошибка статики:', error);
     res.status(500).send('Ошибка сервера');
+  }
+});
+
+// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Синхронизация всех файлов с FTP
+app.get('/api/sync-ftp', async (req, res) => {
+  try {
+    const client = new FTPClient();
+    
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.cd(FTP_CONFIG.remotePath);
+    
+    const fileList = await client.list();
+    console.log(`📂 Файлов на FTP: ${fileList.length}`);
+    
+    const results = [];
+    for (const file of fileList) {
+      const localPath = path.join(uploadsDir, file.name);
+      
+      if (!fs.existsSync(localPath)) {
+        console.log(`📥 Скачиваю: ${file.name}`);
+        await client.downloadTo(localPath, file.name);
+        results.push({ name: file.name, status: 'downloaded' });
+      } else {
+        results.push({ name: file.name, status: 'exists' });
+      }
+    }
+    
+    await client.close();
+    
+    res.json({ 
+      success: true, 
+      files: results,
+      total: fileList.length
+    });
+  } catch (error) {
+    console.error('❌ Ошибка синхронизации:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

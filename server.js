@@ -62,12 +62,7 @@ async function uploadToFTP(localFilePath, fileName) {
   try {
     console.log(`🔌 Подключение к FTP ${FTP_CONFIG.host}:${FTP_CONFIG.port}...`);
     
-    await client.connect({
-      host: FTP_CONFIG.host,
-      port: FTP_CONFIG.port,
-      timeout: 15000
-    });
-    
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     console.log(`✅ FTP подключение установлено`);
     
@@ -115,12 +110,7 @@ async function deleteFromFTP(fileName) {
   const client = new FTPClient();
   
   try {
-    await client.connect({
-      host: FTP_CONFIG.host,
-      port: FTP_CONFIG.port,
-      timeout: 15000
-    });
-    
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     
     try {

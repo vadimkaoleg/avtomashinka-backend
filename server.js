@@ -38,29 +38,42 @@ const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
 // 📤 Конфигурация SFTP для бэкапа файлов
+// ПORT 22 может быть заблокирован на некоторых хостингах
 const SFTP_CONFIG = {
-  host: '88.212.206.32',
-  port: 22,
-  username: 'cl433989_render',
-  password: 'jA1yU5cC9w',
-  remotePath: '/uploads'
+  host: process.env.SFTP_HOST || '88.212.206.32',
+  port: parseInt(process.env.SFTP_PORT) || 22,
+  username: process.env.SFTP_USER || 'cl433989_render',
+  password: process.env.SFTP_PASS || 'jA1yU5cC9w',
+  remotePath: process.env.SFTP_PATH || '/uploads'
 };
+
+// Флаг для отключения SFTP если недоступен
+let sftpEnabled = true;
 
 // Функция загрузки файла на SFTP
 async function uploadToSFTP(localFilePath, fileName) {
+  if (!sftpEnabled) {
+    console.log(`⏭️ SFTP отключен, пропускаем загрузку: ${fileName}`);
+    return false;
+  }
+  
   const sftp = new SftpClient();
-  const timeoutMs = 20000; // 20 секунд таймаут
+  const timeoutMs = 15000; // 15 секунд таймаут
   
   try {
+    console.log(`🔌 Подключение к SFTP ${SFTP_CONFIG.host}:${SFTP_CONFIG.port}...`);
+    
     await sftp.connect({
       host: SFTP_CONFIG.host,
       port: SFTP_CONFIG.port,
       username: SFTP_CONFIG.username,
       password: SFTP_CONFIG.password,
       readyTimeout: timeoutMs,
-      retries: 2,
-      retry_minTimeout: 2000
+      retries: 1,
+      retry_minTimeout: 3000
     });
+    
+    console.log(`✅ SFTP подключение установлено`);
     
     // Проверяем/создаем папку на SFTP
     const remoteDir = SFTP_CONFIG.remotePath;
@@ -78,6 +91,13 @@ async function uploadToSFTP(localFilePath, fileName) {
     return true;
   } catch (error) {
     console.error('❌ Ошибка SFTP загрузки:', error.message);
+    
+    // Если таймаут - отключаем SFTP для оптимизации
+    if (error.message.includes('Timed out') || error.message.includes('ECONNREFUSED')) {
+      console.warn('⚠️ SFTP недоступен, отключаем для оптимизации');
+      sftpEnabled = false;
+    }
+    
     // SFTP бэкап не критичен - файл уже сохранён локально
     return false;
   } finally {
@@ -89,8 +109,13 @@ async function uploadToSFTP(localFilePath, fileName) {
 
 // Функция удаления файла с SFTP
 async function deleteFromSFTP(fileName) {
+  if (!sftpEnabled) {
+    console.log(`⏭️ SFTP отключен, пропускаем удаление: ${fileName}`);
+    return false;
+  }
+  
   const sftp = new SftpClient();
-  const timeoutMs = 20000; // 20 секунд таймаут
+  const timeoutMs = 15000; // 15 секунд таймаут
   
   try {
     await sftp.connect({
@@ -99,8 +124,8 @@ async function deleteFromSFTP(fileName) {
       username: SFTP_CONFIG.username,
       password: SFTP_CONFIG.password,
       readyTimeout: timeoutMs,
-      retries: 2,
-      retry_minTimeout: 2000
+      retries: 1,
+      retry_minTimeout: 3000
     });
     
     const remotePath = `${SFTP_CONFIG.remotePath}/${fileName}`;
@@ -112,10 +137,17 @@ async function deleteFromSFTP(fileName) {
     } else {
       console.log(`⚠️ Файл не найден на SFTP: ${fileName}`);
     }
-    
+
     return true;
   } catch (error) {
     console.error('❌ Ошибка удаления с SFTP:', error.message);
+    
+    // Если таймаут - отключаем SFTP
+    if (error.message.includes('Timed out') || error.message.includes('ECONNREFUSED')) {
+      console.warn('⚠️ SFTP недоступен, отключаем для оптимизации');
+      sftpEnabled = false;
+    }
+    
     // SFTP бэкап не критичен - локальный файл уже удалён
     return false;
   } finally {

@@ -1049,6 +1049,7 @@ app.get('/api/download/:filename', async (req, res) => {
     console.log(`📥 Скачивание файла: ${filename} (mode: ${mode}, direct: ${direct})`);
     
     let fileBuffer;
+    let useStream = false;
     
     if (direct) {
       // 📥 Читаем файл напрямую с FTP в буфер (без записи на диск)
@@ -1072,41 +1073,71 @@ app.get('/api/download/:filename', async (req, res) => {
         console.log(`   📄 Файл найден локально: ${filename}`);
       }
       
-      // Читаем файл напрямую в буфер (бинарный режим)
-      fileBuffer = fs.readFileSync(filePath);
-      console.log(`   📄 Размер файла: ${fileBuffer.length} bytes`);
-    }
-    
-    // 🔍 ДЕБАГ: Проверяем заголовок файла перед отдачей
-    const headerBytes = fileBuffer.slice(0, 10);
-    const headerStr = headerBytes.toString('ascii').substring(0, 5);
-    console.log(`   🔍 Заголовок файла: "${headerStr}" (hex: ${headerBytes.toString('hex').substring(0, 20)})`);
-    
-    // Проверяем, что PDF файл начинается с %PDF
-    if (filename.toLowerCase().endsWith('.pdf')) {
-      if (!headerStr.startsWith('%PDF')) {
-        console.error(`   ❌ ОШИБКА: PDF файл поврежден! Ожидался заголовок "%PDF", получен: "${headerStr}"`);
-        return res.status(500).json({ error: 'Файл повреждён на сервере' });
-      }
-      console.log(`   ✅ PDF заголовок корректный`);
+      // Используем стрим для надёжной передачи
+      useStream = true;
+      console.log(`   📄 Используем потоковую передачу`);
     }
     
     const mimeType = getMimeType(filename);
     
-    // Устанавливаем заголовки для бинарной передачи
-    res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Length', fileBuffer.length);
-    res.setHeader('Content-Disposition', mode === 'preview' 
-      ? `inline; filename="${encodeURIComponent(originalName)}"` 
-      : `attachment; filename="${encodeURIComponent(originalName)}"`);
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    
-    // Отдаем файл напрямую через end() - это гарантирует бинарную целостность
-    console.log(`   📤 Отдаем файл клиенту: ${filename}`);
-    res.end(fileBuffer);
-    console.log(`   ✅ Файл успешно отдан`);
+    if (useStream) {
+      // Используем createReadStream для потоковой передачи
+      const stat = fs.statSync(filePath);
+      
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Length', stat.size);
+      res.setHeader('Content-Disposition', mode === 'preview' 
+        ? `inline; filename="${encodeURIComponent(originalName)}"` 
+        : `attachment; filename="${encodeURIComponent(originalName)}"`);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      
+      console.log(`   📤 Отдаем файл через поток: ${filename}`);
+      const stream = fs.createReadStream(filePath);
+      stream.pipe(res);
+      
+      stream.on('end', () => {
+        console.log(`   ✅ Файл успешно отдан (stream)`);
+      });
+      
+      stream.on('error', (err) => {
+        console.error(`   ❌ Ошибка стрима: ${err.message}`);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Ошибка при отдаче файла' });
+        }
+      });
+    } else {
+      // Используем буфер (для direct=1)
+      // 🔍 ДЕБАГ: Проверяем заголовок файла перед отдачей
+      const headerBytes = fileBuffer.slice(0, 10);
+      const headerStr = headerBytes.toString('ascii').substring(0, 5);
+      console.log(`   🔍 Заголовок файла: "${headerStr}" (hex: ${headerBytes.toString('hex').substring(0, 20)})`);
+      
+      // Проверяем, что PDF файл начинается с %PDF
+      if (filename.toLowerCase().endsWith('.pdf')) {
+        if (!headerStr.startsWith('%PDF')) {
+          console.error(`   ❌ ОШИБКА: PDF файл поврежден! Ожидался заголовок "%PDF", получен: "${headerStr}"`);
+          return res.status(500).json({ error: 'Файл повреждён на сервере' });
+        }
+        console.log(`   ✅ PDF заголовок корректный`);
+      }
+      
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Length', fileBuffer.length);
+      res.setHeader('Content-Disposition', mode === 'preview' 
+        ? `inline; filename="${encodeURIComponent(originalName)}"` 
+        : `attachment; filename="${encodeURIComponent(originalName)}"`);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      
+      console.log(`   📤 Отдаем файл из буфера: ${filename}`);
+      res.end(fileBuffer);
+      console.log(`   ✅ Файл успешно отдан (buffer)`);
+    }
     
   } catch (error) {
     console.error('❌ Ошибка при скачивании файла:', error.message);

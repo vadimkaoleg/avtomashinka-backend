@@ -471,12 +471,12 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     const { title, description, is_visible } = req.body;
     
-    const existingDoc = await db.get("SELECT * FROM documents WHERE id = ?", [id]);
+    const existingDoc = dbGet("SELECT * FROM documents WHERE id = ?", [id]);
     if (!existingDoc) {
       return res.status(404).json({ error: 'Документ не найден' });
     }
     
-    await db.run(
+    dbRun(
       `UPDATE documents 
        SET title = ?, description = ?, is_visible = ? 
        WHERE id = ?`,
@@ -506,7 +506,7 @@ app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const doc = await db.get("SELECT * FROM documents WHERE id = ?", [id]);
+    const doc = dbGet("SELECT * FROM documents WHERE id = ?", [id]);
     if (!doc) {
       return res.status(404).json({ error: 'Документ не найден' });
     }
@@ -516,7 +516,7 @@ app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
       fs.unlinkSync(filePath);
     }
     
-    await db.run("DELETE FROM documents WHERE id = ?", [id]);
+    dbRun("DELETE FROM documents WHERE id = ?", [id]);
     
     console.log(`🗑️ Удален документ ID: ${id} (${doc.title})`);
     
@@ -555,7 +555,7 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
 // Получить все блоки (публичный доступ)
 app.get('/api/blocks', async (req, res) => {
   try {
-    const blocks = await db.all("SELECT * FROM blocks WHERE is_visible = 1");
+    const blocks = dbAll("SELECT * FROM blocks WHERE is_visible = 1");
     const blocksData = blocks.map(block => ({
       ...block,
       items: block.items ? JSON.parse(block.items) : null,
@@ -572,7 +572,7 @@ app.get('/api/blocks', async (req, res) => {
 app.get('/api/blocks/:name', async (req, res) => {
   try {
     const { name } = req.params;
-    const block = await db.get("SELECT * FROM blocks WHERE name = ? AND is_visible = 1", [name]);
+    const block = dbGet("SELECT * FROM blocks WHERE name = ? AND is_visible = 1", [name]);
     if (!block) {
       return res.status(404).json({ error: 'Блок не найден' });
     }
@@ -590,7 +590,7 @@ app.get('/api/blocks/:name', async (req, res) => {
 // Получить все блоки для админки
 app.get('/api/admin/blocks', authenticateToken, async (req, res) => {
   try {
-    const blocks = await db.all("SELECT * FROM blocks ORDER BY id");
+    const blocks = await dbAll("SELECT * FROM blocks ORDER BY id");
     const blocksData = blocks.map(block => ({
       ...block,
       items: block.items ? JSON.parse(block.items) : null,
@@ -609,14 +609,14 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     const { title, subtitle, content, button_text, button_link, image, items, is_visible } = req.body;
 
-    const existingBlock = await db.get("SELECT * FROM blocks WHERE id = ?", [id]);
+    const existingBlock = dbGet("SELECT * FROM blocks WHERE id = ?", [id]);
     if (!existingBlock) {
       return res.status(404).json({ error: 'Блок не найден' });
     }
 
     const itemsJson = items ? JSON.stringify(items) : existingBlock.items;
 
-    await db.run(
+    dbRun(
       `UPDATE blocks 
        SET title = ?, subtitle = ?, content = ?, button_text = ?, button_link = ?, image = ?, items = ?, is_visible = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
@@ -687,8 +687,8 @@ app.get('/api/download/:filename', (req, res) => {
 // Информация о сервере (требуется токен)
 app.get('/api/server-info', authenticateToken, async (req, res) => {
   try {
-    const docCount = await db.get("SELECT COUNT(*) as count FROM documents");
-    const visibleCount = await db.get("SELECT COUNT(*) as count FROM documents WHERE is_visible = 1");
+    const docCount = dbGet("SELECT COUNT(*) as count FROM documents");
+    const visibleCount = dbGet("SELECT COUNT(*) as count FROM documents WHERE is_visible = 1");
     
     let uploadsSize = 0;
     if (fs.existsSync(uploadsDir)) {

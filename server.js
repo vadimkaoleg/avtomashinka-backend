@@ -8,7 +8,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import initSqlJs from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
-import { FTPClient } from 'basic-ftp';
+import pkg from 'basic-ftp';
+const { FTPClient } = pkg;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();

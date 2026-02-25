@@ -8,7 +8,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import initSqlJs from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
-import SftpClient from 'ssh2-sftp-client';
+import { FTPClient } from 'basic-ftp';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -37,122 +37,112 @@ app.use((req, res, next) => {
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-// 📤 Конфигурация SFTP для бэкапа файлов
-// ПОРТЫ: 22, 2222, 2022 могут быть доступны
-const SFTP_CONFIG = {
-  host: process.env.SFTP_HOST || '88.212.206.32',
-  port: parseInt(process.env.SFTP_PORT) || 2222, // Пробуем 2222 вместо 22
-  username: process.env.SFTP_USER || 'cl433989_render',
-  password: process.env.SFTP_PASS || 'jA1yU5cC9w',
-  remotePath: process.env.SFTP_PATH || '/uploads'
+// 📤 Конфигурация FTP для бэкапа файлов
+const FTP_CONFIG = {
+  host: process.env.FTP_HOST || '88.212.206.32',
+  port: parseInt(process.env.FTP_PORT) || 21,
+  user: process.env.FTP_USER || 'cl433989_render',
+  password: process.env.FTP_PASS || 'jA1yU5cC9w',
+  remotePath: process.env.FTP_PATH || 'uploads'
 };
 
-// Флаг для отключения SFTP если недоступен
-let sftpEnabled = true;
+// Флаг для отключения FTP если недоступен
+let ftpEnabled = true;
 
-// Функция загрузки файла на SFTP
-async function uploadToSFTP(localFilePath, fileName) {
-  if (!sftpEnabled) {
-    console.log(`⏭️ SFTP отключен, пропускаем загрузку: ${fileName}`);
+// Функция загрузки файла на FTP
+async function uploadToFTP(localFilePath, fileName) {
+  if (!ftpEnabled) {
+    console.log(`⏭️ FTP отключен, пропускаем загрузку: ${fileName}`);
     return false;
   }
   
-  const sftp = new SftpClient();
-  const timeoutMs = 15000; // 15 секунд таймаут
+  const client = new FTPClient();
   
   try {
-    console.log(`🔌 Подключение к SFTP ${SFTP_CONFIG.host}:${SFTP_CONFIG.port}...`);
+    console.log(`🔌 Подключение к FTP ${FTP_CONFIG.host}:${FTP_CONFIG.port}...`);
     
-    await sftp.connect({
-      host: SFTP_CONFIG.host,
-      port: SFTP_CONFIG.port,
-      username: SFTP_CONFIG.username,
-      password: SFTP_CONFIG.password,
-      readyTimeout: timeoutMs,
-      retries: 1,
-      retry_minTimeout: 3000
+    await client.connect({
+      host: FTP_CONFIG.host,
+      port: FTP_CONFIG.port,
+      timeout: 15000
     });
     
-    console.log(`✅ SFTP подключение установлено`);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    console.log(`✅ FTP подключение установлено`);
     
-    // Проверяем/создаем папку на SFTP
-    const remoteDir = SFTP_CONFIG.remotePath;
-    const dirExists = await sftp.exists(remoteDir);
-    if (!dirExists) {
-      await sftp.mkdir(remoteDir, true);
-      console.log(`📁 Создана папка на SFTP: ${remoteDir}`);
+    // Проверяем/создаем папку на FTP
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+    } catch {
+      try {
+        await client.mkdir(FTP_CONFIG.remotePath);
+        await client.cd(FTP_CONFIG.remotePath);
+      } catch (mkdirErr) {
+        console.warn('⚠️ Не удалось создать папку на FTP:', mkdirErr.message);
+      }
     }
     
     // Загружаем файл
-    const remotePath = `${remoteDir}/${fileName}`;
-    await sftp.put(localFilePath, remotePath);
+    await client.uploadFrom(localFilePath, fileName);
     
-    console.log(`✅ Файл загружен на SFTP: ${fileName}`);
+    console.log(`✅ Файл загружен на FTP: ${fileName}`);
     return true;
   } catch (error) {
-    console.error('❌ Ошибка SFTP загрузки:', error.message);
+    console.error('❌ Ошибка FTP загрузки:', error.message);
     
-    // Если таймаут - отключаем SFTP для оптимизации
-    if (error.message.includes('Timed out') || error.message.includes('ECONNREFUSED')) {
-      console.warn('⚠️ SFTP недоступен, отключаем для оптимизации');
-      sftpEnabled = false;
+    // Если недоступен - отключаем FTP
+    if (error.message.includes('Timed out') || error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+      console.warn('⚠️ FTP недоступен, отключаем для оптимизации');
+      ftpEnabled = false;
     }
     
-    // SFTP бэкап не критичен - файл уже сохранён локально
     return false;
   } finally {
     try {
-      await sftp.end();
+      await client.close();
     } catch {}
   }
 }
 
-// Функция удаления файла с SFTP
-async function deleteFromSFTP(fileName) {
-  if (!sftpEnabled) {
-    console.log(`⏭️ SFTP отключен, пропускаем удаление: ${fileName}`);
+// Функция удаления файла с FTP
+async function deleteFromFTP(fileName) {
+  if (!ftpEnabled) {
+    console.log(`⏭️ FTP отключен, пропускаем удаление: ${fileName}`);
     return false;
   }
   
-  const sftp = new SftpClient();
-  const timeoutMs = 15000; // 15 секунд таймаут
+  const client = new FTPClient();
   
   try {
-    await sftp.connect({
-      host: SFTP_CONFIG.host,
-      port: SFTP_CONFIG.port,
-      username: SFTP_CONFIG.username,
-      password: SFTP_CONFIG.password,
-      readyTimeout: timeoutMs,
-      retries: 1,
-      retry_minTimeout: 3000
+    await client.connect({
+      host: FTP_CONFIG.host,
+      port: FTP_CONFIG.port,
+      timeout: 15000
     });
     
-    const remotePath = `${SFTP_CONFIG.remotePath}/${fileName}`;
-    const exists = await sftp.exists(remotePath);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     
-    if (exists) {
-      await sftp.delete(remotePath);
-      console.log(`✅ Файл удален с SFTP: ${fileName}`);
-    } else {
-      console.log(`⚠️ Файл не найден на SFTP: ${fileName}`);
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+      await client.remove(fileName);
+      console.log(`✅ Файл удален с FTP: ${fileName}`);
+    } catch {
+      console.log(`⚠️ Файл не найден на FTP: ${fileName}`);
     }
-
+    
     return true;
   } catch (error) {
-    console.error('❌ Ошибка удаления с SFTP:', error.message);
+    console.error('❌ Ошибка удаления с FTP:', error.message);
     
-    // Если таймаут - отключаем SFTP
-    if (error.message.includes('Timed out') || error.message.includes('ECONNREFUSED')) {
-      console.warn('⚠️ SFTP недоступен, отключаем для оптимизации');
-      sftpEnabled = false;
+    if (error.message.includes('Timed out') || error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+      console.warn('⚠️ FTP недоступен, отключаем для оптимизации');
+      ftpEnabled = false;
     }
     
-    // SFTP бэкап не критичен - локальный файл уже удалён
     return false;
   } finally {
     try {
-      await sftp.end();
+      await client.close();
     } catch {}
   }
 }
@@ -608,12 +598,12 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
       
       uploadedIds.push(result.lastID);
       
-      // 📤 Загружаем файл на SFTP бэкап (не блокирует ответ)
-      const sftpResult = await uploadToSFTP(file.path, file.filename);
-      if (sftpResult) {
-        console.log(`💾 SFTP бэкап создан для: ${file.filename}`);
+      // 📤 Загружаем файл на FTP бэкап (не блокирует ответ)
+      const ftpResult = await uploadToFTP(file.path, file.filename);
+      if (ftpResult) {
+        console.log(`💾 FTP бэкап создан для: ${file.filename}`);
       } else {
-        console.warn(`⚠️ SFTP бэкап НЕ создан для: ${file.filename} (файл сохранён локально)`);
+        console.warn(`⚠️ FTP бэкап НЕ создан для: ${file.filename} (файл сохранён локально)`);
       }
       
       console.log(`✅ Загружен документ: ${fileTitle} (${file.originalname})`);
@@ -697,10 +687,10 @@ app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
       fs.unlinkSync(filePath);
     }
     
-    // 📤 Удаляем файл с SFTP
-    const sftpResult = await deleteFromSFTP(doc.filename);
-    if (!sftpResult) {
-      console.warn(`⚠️ SFTP бэкап НЕ удалён для: ${doc.filename}`);
+    // 📤 Удаляем файл с FTP
+    const ftpResult = await deleteFromFTP(doc.filename);
+    if (!ftpResult) {
+      console.warn(`⚠️ FTP бэкап НЕ удалён для: ${doc.filename}`);
     }
     
     dbRun("DELETE FROM documents WHERE id = ?", [id]);
@@ -726,12 +716,12 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
       return res.status(400).json({ error: 'Файл не загружен' });
     }
 
-    // 📤 Загружаем изображение на SFTP бэкап (не блокирует ответ)
-    const sftpResult = await uploadToSFTP(file.path, file.filename);
-    if (sftpResult) {
-      console.log(`💾 SFTP бэкап изображения создан: ${file.filename}`);
+    // 📤 Загружаем изображение на FTP бэкап (не блокирует ответ)
+    const ftpResult = await uploadToFTP(file.path, file.filename);
+    if (ftpResult) {
+      console.log(`💾 FTP бэкап изображения создан: ${file.filename}`);
     } else {
-      console.warn(`⚠️ SFTP бэкап изображения НЕ создан: ${file.filename}`);
+      console.warn(`⚠️ FTP бэкап изображения НЕ создан: ${file.filename}`);
     }
 
     res.json({

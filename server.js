@@ -1027,11 +1027,16 @@ async function syncFilesFromFTP() {
     
     // Используем имена файлов напрямую (без UUID)
     // Файлы уже имеют нормальные имена на FTP
-    console.log(`   📄 Используем имена файлов с FTP`);
+    console.log(`   📄 Файлы на FTP: ${fileList.map(f => f.name).join(', ')}`);
     
     // Пропускаем файл named (служебный)
-    const actualFiles = fileList.filter(f => f.name !== 'named');
+    const actualFiles = fileList.filter(f => f.name !== 'named' && !f.name.startsWith('.'));
     console.log(`   📂 Файлов для загрузки: ${actualFiles.length}`);
+    
+    if (actualFiles.length === 0) {
+      console.log('   ⚠️ Нет файлов для загрузки (только служебные)');
+      return;
+    }
     
     let downloaded = 0;
     let added = 0;
@@ -1041,12 +1046,6 @@ async function syncFilesFromFTP() {
     console.log('🗑️ Очищена таблица документов');
     
     for (const file of actualFiles) {
-      // Пропускаем служебный файл named
-      if (file.name === 'named') {
-        console.log(`   ⏭️ Пропускаем служебный файл: named`);
-        continue;
-      }
-      
       const localPath = path.join(uploadsDir, file.name);
       
       // Скачиваем если нет локально

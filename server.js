@@ -1027,6 +1027,10 @@ async function syncFilesFromFTP() {
     let downloaded = 0;
     let added = 0;
     
+    // Очищаем таблицу документов и добавляем заново с FTP
+    db.run('DELETE FROM documents');
+    console.log('🗑️ Очищена таблица документов');
+    
     for (const file of fileList) {
       const localPath = path.join(uploadsDir, file.name);
       
@@ -1037,32 +1041,24 @@ async function syncFilesFromFTP() {
         downloaded++;
       }
       
-      // Проверяем/добавляем запись в БД
-      const existingDoc = db.prepare('SELECT id, is_visible FROM documents WHERE filename = ?').get(file.name);
-      if (!existingDoc) {
-        // Извлекаем оригинальное имя из UUID
-        const originalName = file.name.replace(/^[0-9a-f-]{36}\./, '');
-        
-        db.prepare(`
-          INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          originalName.replace('.pdf', '') || 'Документ',
-          '',
-          file.name,
-          originalName,
-          file.size,
-          'pdf',
-          1
-        );
-        console.log(`📝 Добавлен в БД: ${file.name}`);
-        added++;
-      } else if (existingDoc.is_visible === 0) {
-        // Активируем скрытые документы
-        db.prepare('UPDATE documents SET is_visible = 1 WHERE id = ?').run(existingDoc.id);
-        console.log(`👁️ Активирован документ: ${file.name}`);
-        added++;
-      }
+      // Добавляем запись в БД
+      // Извлекаем оригинальное имя из UUID
+      const originalName = file.name.replace(/^[0-9a-f-]{36}\./, '');
+      
+      db.prepare(`
+        INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        originalName.replace('.pdf', '') || 'Документ',
+        '',
+        file.name,
+        originalName,
+        file.size,
+        'pdf',
+        1
+      );
+      console.log(`📝 Добавлен в БД: ${file.name}`);
+      added++;
     }
     
     console.log(`✅ Синхронизация завершена: ${downloaded} файлов скачано, ${added} добавлено в БД`);

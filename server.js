@@ -1010,6 +1010,43 @@ app.get('/uploads/:filename', async (req, res) => {
   }
 });
 
+// 🔄 Автоматическая синхронизация файлов с FTP при старте
+async function syncFilesFromFTP() {
+  console.log('🔄 Начинаем синхронизацию файлов с FTP...');
+  
+  const client = new FTPClient();
+  
+  try {
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.cd(FTP_CONFIG.remotePath);
+    
+    const fileList = await client.list();
+    console.log(`📂 Файлов на FTP: ${fileList.length}`);
+    
+    let downloaded = 0;
+    for (const file of fileList) {
+      const localPath = path.join(uploadsDir, file.name);
+      
+      if (!fs.existsSync(localPath)) {
+        console.log(`📥 Скачиваю: ${file.name}`);
+        await client.downloadTo(localPath, file.name);
+        downloaded++;
+      }
+    }
+    
+    console.log(`✅ Синхронизация завершена: ${downloaded} новых файлов`);
+    return downloaded;
+  } catch (error) {
+    console.error('❌ Ошибка синхронизации при старте:', error.message);
+    return 0;
+  } finally {
+    try {
+      await client.close();
+    } catch {}
+  }
+}
+
 // 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Синхронизация всех файлов с FTP
 app.get('/api/sync-ftp', async (req, res) => {
   try {
@@ -1133,7 +1170,10 @@ app.use((err, req, res, next) => {
 });
 
 // 🔐 FIXED: Запуск сервера с информацией о JWT
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+  // 🔄 Синхронизируем файлы с FTP при старте
+  await syncFilesFromFTP();
+  
   console.log(`
 🚀 Сервер запущен на http://localhost:${PORT}
 📁 Файлы хранятся в: ${uploadsDir}

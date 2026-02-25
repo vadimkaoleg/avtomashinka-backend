@@ -691,6 +691,9 @@ app.put('/api/admin/password', authenticateToken, async (req, res) => {
 
 // 📁 УПРАВЛЕНИЕ ДОКУМЕНТАМИ
 
+// Прямой URL для файлов на webnames (обход проблем с Render.com)
+const FILES_BASE_URL = 'https://avmashinka.ru/uploads/named';
+
 // Получить все документы (публичный доступ) - БЕЗ аутентификации
 app.get('/api/documents', async (req, res) => {
   try {
@@ -698,10 +701,11 @@ app.get('/api/documents', async (req, res) => {
       "SELECT * FROM documents WHERE is_visible = 1 ORDER BY sort_order ASC, created_at DESC"
     );
     
-    // 🔐 FIXED: Используем относительные URL для фронтенда
+    // Используем прямые ссылки на webnames (минуя Render.com)
     const docsWithUrls = documents.map(doc => ({
       ...doc,
-      downloadUrl: `/api/download/${doc.filename}`,
+      downloadUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
+      fileUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
       is_visible: Boolean(doc.is_visible)
     }));
     
@@ -719,9 +723,11 @@ app.get('/api/admin/documents', authenticateToken, async (req, res) => {
       "SELECT * FROM documents ORDER BY sort_order ASC, created_at DESC"
     );
 
+    // Используем прямые ссылки на webnames
     const docsWithUrls = documents.map(doc => ({
       ...doc,
-      downloadUrl: `/api/download/${doc.filename}`,
+      downloadUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
+      fileUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
       is_visible: Boolean(doc.is_visible)
     }));
     
@@ -1134,49 +1140,56 @@ app.get('/api/download-b64/:filename', async (req, res) => {
   }
 });
 
-// 🔍 НОВЫЙ МАРШРУТ: Отдача через готовый Data URL (обходит любые проблемы передачи)
+// 🔍 НОВЫЙ МАРШРУТ: Отдача напрямую из буфера (минуя стримы)
 app.get('/api/download-dataurl/:filename', async (req, res) => {
   const filename = req.params.filename;
   const originalName = req.query.original || filename;
   const filePath = path.join(uploadsDir, filename);
   
   try {
-    console.log(`📥 [dataurl] Скачивание файла: ${filename}`);
+    console.log(`📥 [buffer] Скачивание файла: ${filename}`);
     
-    if (!fs.existsSync(filePath)) {
-      const downloaded = await downloadFromFTP(filename, filePath);
-      if (!downloaded) {
-        return res.status(404).json({ error: 'Файл не найден' });
+    // Скачиваем напрямую в буфер (не на диск!)
+    let fileBuffer = await downloadFileToBuffer(filename);
+    
+    if (!fileBuffer) {
+      // Fallback: читаем с диска
+      if (!fs.existsSync(filePath)) {
+        const downloaded = await downloadFromFTP(filename, filePath);
+        if (!downloaded) {
+          return res.status(404).json({ error: 'Файл не найден' });
+        }
       }
+      fileBuffer = fs.readFileSync(filePath);
     }
     
-    // Читаем файл и кодируем в base64
-    const fileBuffer = fs.readFileSync(filePath);
-    const base64 = fileBuffer.toString('base64');
+    console.log(`   📄 Размер буфера: ${fileBuffer.length} bytes`);
     
-    const headerBytes = fileBuffer.slice(0, 10);
-    const headerStr = headerBytes.toString('ascii').substring(0, 5);
+    // Проверяем заголовок
+    const headerStr = fileBuffer.slice(0, 5).toString('ascii');
     console.log(`   🔍 Заголовок: "${headerStr}"`);
     
     const mimeType = getMimeType(filename);
     
-    // Создаём готовый data URL
-    const dataUrl = `data:${mimeType};base64,${base64}`;
-    
-    console.log(`   ✅ Data URL создан, длина: ${dataUrl.length}`);
-    
-    // Используем end() с буфером для гарантии целостности
-    const buffer = Buffer.from(dataUrl, 'utf8');
-    res.removeHeader('Content-Encoding');
+    // Заголовки для бинарного файла
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', buffer.length);
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Length', fileBuffer.length);
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(originalName)}"`);
-    res.end(buffer);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    
+    // Отдаём буфер напрямую
+    res.end(fileBuffer);
+    
+    console.log(`   ✅ Отправлено ${fileBuffer.length} байт`);
     
   } catch (error) {
     console.error('❌ Ошибка:', error.message);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Ошибка сервера' });
+    }
   }
 });
 

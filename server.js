@@ -307,179 +307,233 @@ async function deleteFromFTP(fileName) {
   }
 }
 
-// 📦 JSON БЭКАП НА FTP
+// 📦 JSON БЭКАП (локально + FTP)
 
 const BACKUP_FILE = 'backup.json';
+const LOCAL_BACKUP_PATH = path.join(__dirname, BACKUP_FILE);
 
-// Сохранить полный бэкап на FTP
-async function saveBackupToFTP() {
-  if (!ftpEnabled) {
-    console.log('⏭️ FTP отключен, пропускаем сохранение бэкапа');
-    return false;
-  }
-  
-  const client = new FTPClient();
-  
-  try {
-    // Собираем все данные из БД
-    const backup = {
-      timestamp: new Date().toISOString(),
-      blocks: dbAll("SELECT * FROM blocks"),
-      documents: dbAll("SELECT * FROM documents"),
-      sections: dbAll("SELECT * FROM sections"),
-      subsections: dbAll("SELECT * FROM subsections"),
-      admin_users: dbAll("SELECT id, username, created_at FROM admin_users") // Без паролей!
-    };
-    
-    // Добавляем items в blocks (парсим JSON)
-    backup.blocks = backup.blocks.map(block => ({
-      ...block,
-      items: block.items ? JSON.parse(block.items) : null
-    }));
-    
-    const backupJson = JSON.stringify(backup, null, 2);
-    const backupPath = path.join(__dirname, BACKUP_FILE);
-    
-    // Записываем локально
-    fs.writeFileSync(backupPath, backupJson, 'utf8');
-    
-    // Загружаем на FTP
-    client.ftp.verbose = false;
-    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
-    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    await client.send('TYPE I');
-    
-    try {
-      await client.cd(FTP_CONFIG.remotePath);
-    } catch {
-      try {
-        await client.mkdir(FTP_CONFIG.remotePath);
-        await client.cd(FTP_CONFIG.remotePath);
-      } catch (mkdirErr) {
-        console.warn('⚠️ Не удалось создать папку на FTP:', mkdirErr.message);
-      }
-    }
-    
-    await client.uploadFrom(backupPath, BACKUP_FILE);
-    
-    console.log(`✅ JSON бэкап сохранен на FTP: ${backupJson.length} байт`);
-    return true;
-  } catch (error) {
-    console.error('❌ Ошибка сохранения бэкапа на FTP:', error.message);
-    return false;
-  } finally {
-    try {
-      await client.close();
-    } catch {}
-  }
+// Функция создания бэкапа (данные из БД)
+function createBackupData() {
+  return {
+    timestamp: new Date().toISOString(),
+    blocks: dbAll("SELECT * FROM blocks"),
+    documents: dbAll("SELECT * FROM documents"),
+    sections: dbAll("SELECT * FROM sections"),
+    subsections: dbAll("SELECT * FROM subsections"),
+    admin_users: dbAll("SELECT id, username, created_at FROM admin_users")
+  };
 }
 
-// Загрузить бэкап с FTP при старте
+// Функция восстановления данных из бэкапа
+function restoreFromBackup(backup) {
+  if (backup.blocks && backup.blocks.length > 0) {
+    db.run("DELETE FROM blocks");
+    for (const block of backup.blocks) {
+      const itemsJson = block.items ? JSON.stringify(block.items) : null;
+      db.run(
+        `INSERT INTO blocks (id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          block.id, block.name,
+          block.title || '', block.subtitle || '', block.content || '',
+          block.button_text || '', block.button_link || '', block.image || '',
+          itemsJson, block.is_visible ? 1 : 0,
+          block.updated_at || new Date().toISOString()
+        ]
+      );
+    }
+    console.log(`✅ Восстановлено ${backup.blocks.length} блоков`);
+  }
+    
+  if (backup.sections && backup.sections.length > 0) {
+    db.run("DELETE FROM sections");
+    for (const section of backup.sections) {
+      db.run(
+        `INSERT INTO sections (id, name, sort_order, is_visible, created_at) VALUES (?, ?, ?, ?, ?)`,
+        [section.id, section.name, section.sort_order || 0, section.is_visible ? 1 : 0, section.created_at]
+      );
+    }
+    console.log(`✅ Восстановлено ${backup.sections.length} разделов`);
+  }
+  
+  if (backup.subsections && backup.subsections.length > 0) {
+    db.run("DELETE FROM subsections");
+    for (const subsection of backup.subsections) {
+      db.run(
+        `INSERT INTO subsections (id, section_id, name, sort_order, is_visible, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [subsection.id, subsection.section_id, subsection.name, subsection.sort_order || 0, subsection.is_visible ? 1 : 0, subsection.created_at]
+      );
+    }
+    console.log(`✅ Восстановлено ${backup.subsections.length} подразделов`);
+  }
+  
+  saveDatabase();
+}
+
+// Сохранить бэкап (локально + на FTP)
+async function saveBackupToFTP() {
+  const backup = createBackupData();
+  
+  // Преобразуем items в blocks для JSON
+  const backupForJson = {
+    ...backup,
+    blocks: backup.blocks.map(block => ({
+      ...block,
+      items: block.items ? JSON.parse(block.items) : null
+    }))
+  };
+  
+  const backupJson = JSON.stringify(backupForJson, null, 2);
+  
+  // 📁 Всегда сохраняем локально
+  fs.writeFileSync(LOCAL_BACKUP_PATH, backupJson, 'utf8');
+  console.log(`💾 JSON бэкап сохранен локально: ${backupJson.length} байт`);
+  
+  // 📤 Если FTP доступен - загружаем
+  if (ftpEnabled) {
+    const client = new FTPClient();
+    try {
+      client.ftp.verbose = false;
+      await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+      await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+      await client.send('TYPE I');
+    
+      try {
+        await client.cd(FTP_CONFIG.remotePath);
+      } catch {
+        try {
+          await client.mkdir(FTP_CONFIG.remotePath);
+          await client.cd(FTP_CONFIG.remotePath);
+        } catch (mkdirErr) {
+          console.warn('⚠️ Не удалось создать папку на FTP:', mkdirErr.message);
+        }
+      }
+      
+      await client.uploadFrom(LOCAL_BACKUP_PATH, BACKUP_FILE);
+      console.log(`📤 JSON бэкап загружен на FTP`);
+      return true;
+    } catch (error) {
+      console.error('❌ Ошибка загрузки бэкапа на FTP:', error.message);
+      return false;
+    } finally {
+      try { await client.close(); } catch {}
+    }
+  }
+  
+  return true;
+}
+
+// Загрузить бэкап при старте (локальный + FTP, выбираем свежий)
 async function loadBackupFromFTP() {
-  if (!ftpEnabled) {
-    console.log('⏭️ FTP отключен, пропускаем загрузку бэкапа');
+  const client = new FTPClient();
+  
+  let localTimestamp = null;
+  let ftpTimestamp = null;
+  
+  // 📥 Проверяем локальный бэкап
+  if (fs.existsSync(LOCAL_BACKUP_PATH)) {
+    try {
+      const localBackup = JSON.parse(fs.readFileSync(LOCAL_BACKUP_PATH, 'utf8'));
+      localTimestamp = localBackup.timestamp;
+      console.log(`💾 Локальный бэкап: ${localTimestamp}`);
+    } catch (e) {
+      console.warn('⚠️ Локальный бэкап поврежден');
+    }
+  }
+  
+  // 📥 Проверяем FTP бэкап
+  if (ftpEnabled) {
+    try {
+      client.ftp.verbose = false;
+      await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+      await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+      await client.send('TYPE I');
+      
+      try {
+        await client.cd(FTP_CONFIG.remotePath);
+        const fileList = await client.list();
+        const backupFile = fileList.find(f => f.name === BACKUP_FILE);
+        
+        if (backupFile) {
+          // Скачиваем чтобы прочитать timestamp
+          const tempPath = path.join(__dirname, 'backup_temp.json');
+          await client.downloadTo(tempPath, BACKUP_FILE);
+          
+          if (fs.existsSync(tempPath)) {
+            const ftpBackup = JSON.parse(fs.readFileSync(tempPath, 'utf8'));
+            ftpTimestamp = ftpBackup.timestamp;
+            console.log(`📤 FTP бэкап: ${ftpTimestamp}`);
+            fs.unlinkSync(tempPath); // Удаляем временный файл
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ Не удалось проверить FTP бэкап:', e.message);
+      }
+    } catch (error) {
+      console.warn('⚠️ FTP недоступен при проверке бэкапа:', error.message);
+    } finally {
+      try { await client.close(); } catch {}
+    }
+  }
+  
+  // 🎯 Определяем какой бэкап использовать (свежий)
+  let restoreFromFtp = false;
+  
+  if (!localTimestamp && !ftpTimestamp) {
+    console.log('📋 Бэкапов нет, используем текущую БД');
     return false;
   }
   
-  const client = new FTPClient();
-  const backupPath = path.join(__dirname, BACKUP_FILE);
+  if (localTimestamp && !ftpTimestamp) {
+    console.log('📋 Только локальный бэкап, используем его');
+    restoreFromFtp = false;
+  } else if (!localTimestamp && ftpTimestamp) {
+    console.log('📋 Только FTP бэкап, используем его');
+    restoreFromFtp = true;
+  } else {
+    // Оба есть - выбираем свежий
+    const localDate = new Date(localTimestamp);
+    const ftpDate = new Date(ftpTimestamp);
+    
+    if (ftpDate > localDate) {
+      console.log('📋 FTP бэкап новее, используем его');
+      restoreFromFtp = true;
+    } else {
+      console.log('📋 Локальный бэкап новее/одинаковый, используем его');
+      restoreFromFtp = false;
+    }
+  }
   
+  // 🔄 Восстанавливаем данные
   try {
-    client.ftp.verbose = false;
-    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
-    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    await client.send('TYPE I');
-    
-    try {
-      await client.cd(FTP_CONFIG.remotePath);
-    } catch {
-      console.log('⚠️ Папка FTP не найдена, бэкап не будет загружен');
-      return false;
-    }
-    
-    // Проверяем есть ли файл бэкапа
-    const fileList = await client.list();
-    const backupFile = fileList.find(f => f.name === BACKUP_FILE);
-    
-    if (!backupFile) {
-      console.log('📋 Бэкап на FTP не найден, используем текущую БД');
-      return false;
-    }
-    
-    // Скачиваем бэкап
-    await client.downloadTo(backupPath, BACKUP_FILE);
-    
-    if (!fs.existsSync(backupPath)) {
-      console.error('❌ Бэкап не скачался');
-      return false;
-    }
-    
-    const backupJson = fs.readFileSync(backupPath, 'utf8');
-    const backup = JSON.parse(backupJson);
-    
-    console.log(`📥 Загружен бэкап от ${backup.timestamp}`);
-    
-    // Восстанавливаем данные
-    if (backup.blocks && backup.blocks.length > 0) {
-      // Очищаем таблицы
-      db.run("DELETE FROM blocks");
-      
-      // Восстанавливаем блоки
-      for (const block of backup.blocks) {
-        const itemsJson = block.items ? JSON.stringify(block.items) : null;
-        db.run(
-          `INSERT INTO blocks (id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            block.id,
-            block.name,
-            block.title || '',
-            block.subtitle || '',
-            block.content || '',
-            block.button_text || '',
-            block.button_link || '',
-            block.image || '',
-            itemsJson,
-            block.is_visible ? 1 : 0,
-            block.updated_at || new Date().toISOString()
-          ]
-        );
+    if (restoreFromFtp && ftpEnabled) {
+      // Скачиваем с FTP
+      const client2 = new FTPClient();
+      try {
+        client2.ftp.verbose = false;
+        await client2.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+        await client2.login(FTP_CONFIG.user, FTP_CONFIG.password);
+        await client2.send('TYPE I');
+        await client2.cd(FTP_CONFIG.remotePath);
+        await client2.downloadTo(LOCAL_BACKUP_PATH, BACKUP_FILE);
+        
+        const backup = JSON.parse(fs.readFileSync(LOCAL_BACKUP_PATH, 'utf8'));
+        restoreFromBackup(backup);
+        console.log('✅ Бэкап восстановлен с FTP');
+        return true;
+      } finally {
+        try { await client2.close(); } catch {}
       }
-      console.log(`✅ Восстановлено ${backup.blocks.length} блоков`);
+    } else {
+      // Используем локальный
+      const backup = JSON.parse(fs.readFileSync(LOCAL_BACKUP_PATH, 'utf8'));
+      restoreFromBackup(backup);
+      console.log('✅ Бэкап восстановлен локально');
+      return true;
     }
-    
-    if (backup.sections && backup.sections.length > 0) {
-      db.run("DELETE FROM sections");
-      for (const section of backup.sections) {
-        db.run(
-          `INSERT INTO sections (id, name, sort_order, is_visible, created_at) VALUES (?, ?, ?, ?, ?)`,
-          [section.id, section.name, section.sort_order || 0, section.is_visible ? 1 : 0, section.created_at]
-        );
-      }
-      console.log(`✅ Восстановлено ${backup.sections.length} разделов`);
-    }
-    
-    if (backup.subsections && backup.subsections.length > 0) {
-      db.run("DELETE FROM subsections");
-      for (const subsection of backup.subsections) {
-        db.run(
-          `INSERT INTO subsections (id, section_id, name, sort_order, is_visible, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-          [subsection.id, subsection.section_id, subsection.name, subsection.sort_order || 0, subsection.is_visible ? 1 : 0, subsection.created_at]
-        );
-      }
-      console.log(`✅ Восстановлено ${backup.subsections.length} подразделов`);
-    }
-    
-    saveDatabase();
-    console.log('✅ Полный бэкап восстановлен из FTP');
-    return true;
   } catch (error) {
-    console.error('❌ Ошибка загрузки бэкапа:', error.message);
+    console.error('❌ Ошибка восстановления бэкапа:', error.message);
     return false;
-  } finally {
-    try {
-      await client.close();
-    } catch {}
   }
 }
 

@@ -1043,13 +1043,21 @@ async function syncFilesFromFTP() {
       
       // Добавляем запись в БД
       // Извлекаем оригинальное имя из UUID
-      const originalName = file.name.replace(/^[0-9a-f-]{36}\./, '');
+      let originalName = file.name.replace(/^[0-9a-f-]{36}\./, '');
+      
+      // Если не удалось извлечь - используем имя файла как есть
+      if (!originalName || originalName === file.name) {
+        originalName = file.name;
+      }
+      
+      // Title - это имя файла без расширения
+      const title = originalName.replace(/\.[^/.]+$/, '') || 'Документ';
       
       db.prepare(`
         INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(
-        originalName.replace('.pdf', '') || 'Документ',
+        title,
         '',
         file.name,
         originalName,
@@ -1057,7 +1065,7 @@ async function syncFilesFromFTP() {
         'pdf',
         1
       );
-      console.log(`📝 Добавлен в БД: ${file.name}`);
+      console.log(`📝 Добавлен в БД: ${file.name} (${title})`);
       added++;
     }
     

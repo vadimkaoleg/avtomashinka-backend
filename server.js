@@ -1021,9 +1021,9 @@ async function syncFilesFromFTP() {
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     
     // Читаем список файлов из папки uploads/named (основные файлы)
-    await client.cd(FTP_CONFIG.remotePath + '/named');
+    await client.cd(FTP_CONFIG.remotePath);
     const fileList = await client.list();
-    console.log(`📂 Файлов на FTP (uploads/named): ${fileList.length}`);
+    console.log(`📂 Файлов на FTP: ${fileList.length}`);
     
     // Используем имена файлов напрямую (без UUID)
     // Файлы уже имеют нормальные имена на FTP

@@ -1091,10 +1091,54 @@ app.get('/api/debug/download/:filename', async (req, res) => {
   }
 });
 
+// 🔍 АЛЬТЕРНАТИВНЫЙ МАРШРУТ: Отдача через base64 (обходит проблемы с бинарной передачей)
+app.get('/api/download-b64/:filename', async (req, res) => {
+  const filename = req.params.filename;
+  const mode = req.query.mode || 'download';
+  const originalName = req.query.original || filename;
+  const filePath = path.join(uploadsDir, filename);
+  
+  try {
+    console.log(`📥 [base64] Скачивание файла: ${filename}`);
+    
+    if (!fs.existsSync(filePath)) {
+      const downloaded = await downloadFromFTP(filename, filePath);
+      if (!downloaded) {
+        return res.status(404).json({ error: 'Файл не найден' });
+      }
+    }
+    
+    // Читаем файл и кодируем в base64
+    const fileBuffer = fs.readFileSync(filePath);
+    const base64 = fileBuffer.toString('base64');
+    
+    const headerBytes = fileBuffer.slice(0, 10);
+    const headerStr = headerBytes.toString('ascii').substring(0, 5);
+    console.log(`   🔍 Заголовок: "${headerStr}"`);
+    
+    const mimeType = getMimeType(filename);
+    
+    // Отдаём base64 + метаданные
+    res.json({ 
+      filename: originalName,
+      mimeType,
+      size: fileBuffer.length,
+      data: base64  // Клиент декодирует и создаёт Blob
+    });
+    
+    console.log(`   ✅ Отправлено (base64, ${base64.length} символов)`);
+    
+  } catch (error) {
+    console.error('❌ Ошибка:', error.message);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
 // 🔐 FIXED: Скачивание/предпросмотр файла (публичный доступ)
 // ?mode=preview - для предпросмотра в браузере (inline)
 // ?mode=download или без параметра - для скачивания (attachment)
 // ?direct=1 - читать напрямую с FTP без записи на диск
+// Используем pipe через fs для надёжной передачи
 app.get('/api/download/:filename', async (req, res) => {
   const filename = req.params.filename;
   const mode = req.query.mode || 'download';
@@ -1149,24 +1193,34 @@ app.get('/api/download/:filename', async (req, res) => {
     
     const mimeType = getMimeType(filename);
     
+    // Очищаем все предыдущие заголовки
+    res.removeHeader('Content-Encoding');
+    res.removeHeader('Transfer-Encoding');
+    
     // Устанавливаем заголовки
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Length', fileBuffer.length);
     res.setHeader('Content-Disposition', mode === 'preview' 
-      ? `inline; filename="${encodeURIComponent(originalName)}"; filename*=UTF-8''${encodeURIComponent(originalName)}` 
-      : `attachment; filename="${encodeURIComponent(originalName)}"; filename*=UTF-8''${encodeURIComponent(originalName)}`);
+      ? `inline; filename="${encodeURIComponent(originalName)}"` 
+      : `attachment; filename="${encodeURIComponent(originalName)}"`);
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    // Важно: не сжимать ответ
-    res.setHeader('X-Content-Encoding', 'identity');
     
-    console.log(`   📤 Отдаем файл (${fileBuffer.length} bytes)`);
+    console.log(`   📤 Отдаем файл через pipe (${fileBuffer.length} bytes)`);
     
-    // Отдаём буфер напрямую
-    res.status(200).send(fileBuffer);
-    console.log(`   ✅ Отправлено`);
+    // Создаём ReadStream и пишем напрямую в response
+    const readStream = fs.createReadStream(filePath);
+    
+    readStream.on('error', (err) => {
+      console.error(`   ❌ Ошибка стрима: ${err.message}`);
+      if (!res.writableEnded) {
+        res.destroy();
+      }
+    });
+    
+    readStream.pipe(res);
     
   } catch (error) {
     console.error('❌ Ошибка:', error.message);

@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import initSqlJs from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
+import ftp from 'basic-ftp';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -35,6 +36,71 @@ app.use((req, res, next) => {
 // Папки для файлов
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+// 📤 Конфигурация FTP для бэкапа файлов
+const FTP_CONFIG = {
+  host: '88.212.206.32',
+  port: 21,
+  user: 'cl433989_render',
+  password: 'jA1yU5cC9w',
+  remotePath: 'uploads'
+};
+
+// Функция загрузки файла на FTP
+async function uploadToFTP(localFilePath, fileName) {
+  const client = new ftp.FTPClient();
+  try {
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    
+    // Проверяем/создаем папку на FTP
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+    } catch {
+      await client.mkdir(FTP_CONFIG.remotePath);
+      await client.cd(FTP_CONFIG.remotePath);
+    }
+    
+    // Загружаем файл
+    await client.uploadFrom(localFilePath, fileName);
+    
+    console.log(`✅ Файл загружен на FTP: ${fileName}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Ошибка FTP загрузки:', error.message);
+    return false;
+  } finally {
+    try {
+      await client.close();
+    } catch {}
+  }
+}
+
+// Функция удаления файла с FTP
+async function deleteFromFTP(fileName) {
+  const client = new ftp.FTPClient();
+  try {
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+      await client.remove(fileName);
+      console.log(`✅ Файл удален с FTP: ${fileName}`);
+      return true;
+    } catch {
+      console.log(`⚠️ Файл не найден на FTP: ${fileName}`);
+      return true;
+    }
+  } catch (error) {
+    console.error('❌ Ошибка удаления с FTP:', error.message);
+    return false;
+  } finally {
+    try {
+      await client.close();
+    } catch {}
+  }
+}
 
 // MIME types
 function getMimeType(filename) {
@@ -486,6 +552,10 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
       );
       
       uploadedIds.push(result.lastID);
+      
+      // 📤 Загружаем файл на FTP бэкап
+      await uploadToFTP(file.path, file.filename);
+      
       console.log(`✅ Загружен документ: ${fileTitle} (${file.originalname})`);
     }
     
@@ -561,10 +631,14 @@ app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Документ не найден' });
     }
     
+    // Удаляем локальный файл
     const filePath = path.join(uploadsDir, doc.filename);
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
+    
+    // 📤 Удаляем файл с FTP
+    await deleteFromFTP(doc.filename);
     
     dbRun("DELETE FROM documents WHERE id = ?", [id]);
     
@@ -588,6 +662,9 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
     if (!file) {
       return res.status(400).json({ error: 'Файл не загружен' });
     }
+
+    // 📤 Загружаем изображение на FTP бэкап
+    await uploadToFTP(file.path, file.filename);
 
     res.json({
       success: true,

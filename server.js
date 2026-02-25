@@ -64,7 +64,8 @@ async function uploadToFTP(localFilePath, fileName) {
     
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    console.log(`✅ FTP подключение установлено`);
+    await client.binary(); // Важно! Используем binary mode для корректной передачи файлов
+    console.log(`✅ FTP подключение установлено (binary mode)`);
     
     // Проверяем/создаем папку на FTP
     try {
@@ -111,7 +112,8 @@ async function downloadFromFTP(fileName, localPath) {
     
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    console.log(`   ✅ FTP подключен`);
+    await client.binary(); // Важно! Используем binary mode
+    console.log(`   ✅ FTP подключен (binary mode)`);
     
     // Проверяем список файлов на FTP для отладки
     try {
@@ -165,6 +167,7 @@ async function deleteFromFTP(fileName) {
   try {
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.binary(); // Важно! Используем binary mode
     
     try {
       await client.cd(FTP_CONFIG.remotePath);
@@ -336,12 +339,14 @@ async function initDatabase() {
       "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
       ['admin', hash]
     );
+    console.log('✅ Создан администратор: admin / admin123');
     console.log('✅ Создан администратор: admin / e67bBjNy');
   } else {
     db.run(
       "UPDATE admin_users SET password_hash = ? WHERE username = 'admin'",
       [hash]
     );
+    console.log('🔄 Обновлен пароль администратора: admin / admin123');
     console.log('🔄 Обновлен пароль администратора: admin / e67bBjNy');
   }
 
@@ -1266,7 +1271,6 @@ app.listen(PORT, async () => {
 📁 Файлы хранятся в: ${uploadsDir}
 📊 API доступен по: http://localhost:${PORT}/api
 🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}
-👤 Админ: admin / admin123
 ⚡ Примеры запросов:
   GET  http://localhost:${PORT}/ - Информация о сервере
   GET  http://localhost:${PORT}/api/documents - Публичные документы

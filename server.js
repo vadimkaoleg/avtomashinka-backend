@@ -393,6 +393,54 @@ async function initDatabase() {
     // Колонка уже существует
   }
 
+  // 📁 Таблица разделов
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0,
+      is_visible INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 📁 Таблица подразделов
+  db.run(`
+    CREATE TABLE IF NOT EXISTS subsections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      section_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER DEFAULT 0,
+      is_visible INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Добавляем колонки section_id и subsection_id если их нет (миграция)
+  try {
+    db.run("ALTER TABLE documents ADD COLUMN section_id INTEGER");
+  } catch (e) {}
+  try {
+    db.run("ALTER TABLE documents ADD COLUMN subsection_id INTEGER");
+  } catch (e) {}
+
+  // Заполняем разделами по умолчанию если пусто
+  const sectionsCount = db.exec("SELECT COUNT(*) FROM sections");
+  if (sectionsCount.length === 0 || sectionsCount[0].values[0][0] === 0) {
+    const defaultSections = [
+      { name: 'Уставные документы', sort_order: 0 },
+      { name: 'Образовательные программы', sort_order: 1 },
+      { name: 'Документы для учеников', sort_order: 2 },
+      { name: 'Информация для родителей', sort_order: 3 }
+    ];
+    
+    for (const section of defaultSections) {
+      dbRun("INSERT INTO sections (name, sort_order, is_visible) VALUES (?, ?, 1)", [section.name, section.sort_order]);
+    }
+    console.log('✅ Созданы разделы по умолчанию');
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS admin_users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -697,16 +745,24 @@ const FILES_BASE_URL = 'https://avmashinka.ru/uploads/named';
 // Получить все документы (публичный доступ) - БЕЗ аутентификации
 app.get('/api/documents', async (req, res) => {
   try {
-    const documents = dbAll(
-      "SELECT * FROM documents WHERE is_visible = 1 ORDER BY sort_order ASC, created_at DESC"
-    );
+    // Получаем документы с информацией о разделах
+    const documents = dbAll(`
+      SELECT d.*, s.name as section_name, sub.name as subsection_name 
+      FROM documents d
+      LEFT JOIN sections s ON d.section_id = s.id
+      LEFT JOIN subsections sub ON d.subsection_id = sub.id
+      WHERE d.is_visible = 1 
+      ORDER BY d.sort_order ASC, d.created_at DESC
+    `);
     
     // Используем прямые ссылки на webnames (минуя Render.com)
     const docsWithUrls = documents.map(doc => ({
       ...doc,
       downloadUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
       fileUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
-      is_visible: Boolean(doc.is_visible)
+      is_visible: Boolean(doc.is_visible),
+      section_name: doc.section_name || null,
+      subsection_name: doc.subsection_name || null
     }));
     
     res.json(docsWithUrls);
@@ -715,20 +771,27 @@ app.get('/api/documents', async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
-
+  
 // 🔐 FIXED: Получить документы для админки (требуется токен)
 app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   try {
-    const documents = dbAll(
-      "SELECT * FROM documents ORDER BY sort_order ASC, created_at DESC"
-    );
+    // Получаем документы с информацией о разделах
+    const documents = dbAll(`
+      SELECT d.*, s.name as section_name, sub.name as subsection_name 
+      FROM documents d
+      LEFT JOIN sections s ON d.section_id = s.id
+      LEFT JOIN subsections sub ON d.subsection_id = sub.id
+      ORDER BY d.sort_order ASC, d.created_at DESC
+    `);
 
     // Используем прямые ссылки на webnames
     const docsWithUrls = documents.map(doc => ({
       ...doc,
       downloadUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
       fileUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
-      is_visible: Boolean(doc.is_visible)
+      is_visible: Boolean(doc.is_visible),
+      section_name: doc.section_name || null,
+      subsection_name: doc.subsection_name || null
     }));
     
     console.log(`✅ Отправлено ${documents.length} документов для админа`);
@@ -738,7 +801,7 @@ app.get('/api/admin/documents', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
-
+  
 // Обновить порядок документов
 app.put('/api/admin/documents/reorder', authenticateToken, async (req, res) => {
   try {
@@ -768,7 +831,7 @@ app.put('/api/admin/documents/reorder', authenticateToken, async (req, res) => {
 // Загрузить документы (один или несколько)
 app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, res) => {
   try {
-    const { title, description, is_visible = 'true' } = req.body;
+    const { title, description, is_visible = 'true', section_id, subsection_id } = req.body;
     const files = req.files;
     
     if (!files || files.length === 0) {
@@ -794,8 +857,8 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
       
       const result = dbRun(
         `INSERT INTO documents 
-         (title, description, filename, original_name, file_size, file_type, is_visible) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (title, description, filename, original_name, file_size, file_type, is_visible, section_id, subsection_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           fileTitle,
           description ? description.trim() : null,
@@ -803,7 +866,9 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
           file.originalname,
           file.size,
           fileType,
-          is_visible === 'true' ? 1 : 0
+          is_visible === 'true' ? 1 : 0,
+          section_id || null,
+          subsection_id || null
         ]
       );
       
@@ -850,7 +915,7 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
 app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, is_visible } = req.body;
+    const { title, description, is_visible, section_id, subsection_id } = req.body;
     
     const existingDoc = dbGet("SELECT * FROM documents WHERE id = ?", [id]);
     if (!existingDoc) {
@@ -859,12 +924,14 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
     
     dbRun(
       `UPDATE documents 
-       SET title = ?, description = ?, is_visible = ? 
+       SET title = ?, description = ?, is_visible = ?, section_id = ?, subsection_id = ? 
        WHERE id = ?`,
       [
         title ? title.trim() : existingDoc.title,
         description !== undefined ? description.trim() : existingDoc.description,
         is_visible !== undefined ? (is_visible === 'true' ? 1 : 0) : existingDoc.is_visible,
+        section_id !== undefined ? (section_id ? parseInt(section_id) : null) : existingDoc.section_id,
+        subsection_id !== undefined ? (subsection_id ? parseInt(subsection_id) : null) : existingDoc.subsection_id,
         id
       ]
     );
@@ -915,6 +982,221 @@ app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
     
   } catch (error) {
     console.error('❌ Ошибка удаления документа:', error);
+    res.status(500).json({ error: 'Ошибка при удалении' });
+  }
+});
+
+// 📁 УПРАВЛЕНИЕ РАЗДЕЛАМИ
+
+// Получить все разделы (публичный)
+app.get('/api/sections', async (req, res) => {
+  try {
+    const sections = dbAll("SELECT * FROM sections WHERE is_visible = 1 ORDER BY sort_order ASC");
+    const subsections = dbAll("SELECT * FROM subsections WHERE is_visible = 1 ORDER BY sort_order ASC");
+    
+    // Группируем подразделы по разделам
+    const sectionsWithSubsections = sections.map(section => ({
+      ...section,
+      subsections: subsections.filter(sub => sub.section_id === section.id),
+      is_visible: Boolean(section.is_visible)
+    }));
+    
+    res.json(sectionsWithSubsections);
+  } catch (error) {
+    console.error('❌ Ошибка получения разделов:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Получить все разделы для админки
+app.get('/api/admin/sections', authenticateToken, async (req, res) => {
+  try {
+    const sections = dbAll("SELECT * FROM sections ORDER BY sort_order ASC");
+    const subsections = dbAll("SELECT * FROM subsections ORDER BY sort_order ASC");
+    
+    const sectionsWithSubsections = sections.map(section => ({
+      ...section,
+      subsections: subsections.filter(sub => sub.section_id === section.id),
+      is_visible: Boolean(section.is_visible)
+    }));
+    
+    res.json(sectionsWithSubsections);
+  } catch (error) {
+    console.error('❌ Ошибка получения разделов:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Создать раздел
+app.post('/api/admin/sections', authenticateToken, async (req, res) => {
+  try {
+    const { name, is_visible = true } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Название раздела обязательно' });
+    }
+    
+    const maxOrder = dbGet("SELECT MAX(sort_order) as max FROM sections");
+    const newOrder = (maxOrder?.max || 0) + 1;
+    
+    const result = dbRun(
+      "INSERT INTO sections (name, sort_order, is_visible) VALUES (?, ?, ?)",
+      [name.trim(), newOrder, is_visible ? 1 : 0]
+    );
+
+    console.log(`✅ Создан раздел: ${name} (ID: ${result.lastID})`);
+    
+    res.status(201).json({
+      success: true, 
+      id: result.lastID,
+      message: 'Раздел создан'
+    });
+  } catch (error) {
+    console.error('❌ Ошибка создания раздела:', error);
+    res.status(500).json({ error: 'Ошибка при создании' });
+  }
+});
+
+// Обновить раздел
+app.put('/api/admin/sections/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, is_visible, sort_order } = req.body;
+    
+    const existing = dbGet("SELECT * FROM sections WHERE id = ?", [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Раздел не найден' });
+    }
+    
+    dbRun(
+      "UPDATE sections SET name = ?, is_visible = ?, sort_order = ? WHERE id = ?",
+      [
+        name ? name.trim() : existing.name,
+        is_visible !== undefined ? (is_visible ? 1 : 0) : existing.is_visible,
+        sort_order !== undefined ? sort_order : existing.sort_order,
+        id
+      ]
+    );
+    
+    console.log(`✅ Обновлен раздел ID: ${id}`);
+    
+    res.json({ success: true, message: 'Раздел обновлен' });
+  } catch (error) {
+    console.error('❌ Ошибка обновления раздела:', error);
+    res.status(500).json({ error: 'Ошибка при обновлении' });
+  }
+});
+
+// Удалить раздел
+app.delete('/api/admin/sections/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Удаляем подразделы этого раздела
+    dbRun("DELETE FROM subsections WHERE section_id = ?", [id]);
+    
+    // Убираем связь с документами
+    dbRun("UPDATE documents SET section_id = NULL WHERE section_id = ?", [id]);
+    dbRun("UPDATE documents SET subsection_id = NULL WHERE subsection_id IN (SELECT id FROM subsections WHERE section_id = ?)", [id]);
+    
+    // Удаляем раздел
+    dbRun("DELETE FROM sections WHERE id = ?", [id]);
+    
+    console.log(`🗑️ Удален раздел ID: ${id}`);
+    
+    res.json({ success: true, message: 'Раздел удален' });
+  } catch (error) {
+    console.error('❌ Ошибка удаления раздела:', error);
+    res.status(500).json({ error: 'Ошибка при удалении' });
+  }
+});
+
+// Создать подраздел
+app.post('/api/admin/subsections', authenticateToken, async (req, res) => {
+  try {
+    const { section_id, name, is_visible = true } = req.body;
+    
+    if (!section_id) {
+      return res.status(400).json({ error: 'ID раздела обязателен' });
+    }
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Название подраздела обязательно' });
+    }
+    
+    const section = dbGet("SELECT * FROM sections WHERE id = ?", [section_id]);
+    if (!section) {
+      return res.status(404).json({ error: 'Раздел не найден' });
+    }
+    
+    const maxOrder = dbGet("SELECT MAX(sort_order) as max FROM subsections WHERE section_id = ?", [section_id]);
+    const newOrder = (maxOrder?.max || 0) + 1;
+    
+    const result = dbRun(
+      "INSERT INTO subsections (section_id, name, sort_order, is_visible) VALUES (?, ?, ?, ?)",
+      [section_id, name.trim(), newOrder, is_visible ? 1 : 0]
+    );
+    
+    console.log(`✅ Создан подраздел: ${name} (ID: ${result.lastID})`);
+    
+    res.status(201).json({
+      success: true,
+      id: result.lastID,
+      message: 'Подраздел создан'
+    });
+  } catch (error) {
+    console.error('❌ Ошибка создания подраздела:', error);
+    res.status(500).json({ error: 'Ошибка при создании' });
+  }
+});
+
+// Обновить подраздел
+app.put('/api/admin/subsections/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, is_visible, sort_order, section_id } = req.body;
+    
+    const existing = dbGet("SELECT * FROM subsections WHERE id = ?", [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Подраздел не найден' });
+    }
+    
+    dbRun(
+      "UPDATE subsections SET name = ?, is_visible = ?, sort_order = ?, section_id = ? WHERE id = ?",
+      [
+        name ? name.trim() : existing.name,
+        is_visible !== undefined ? (is_visible ? 1 : 0) : existing.is_visible,
+        sort_order !== undefined ? sort_order : existing.sort_order,
+        section_id !== undefined ? section_id : existing.section_id,
+        id
+      ]
+    );
+    
+    console.log(`✅ Обновлен подраздел ID: ${id}`);
+    
+    res.json({ success: true, message: 'Подраздел обновлен' });
+  } catch (error) {
+    console.error('❌ Ошибка обновления подраздела:', error);
+    res.status(500).json({ error: 'Ошибка при обновлении' });
+  }
+});
+
+// Удалить подраздел
+app.delete('/api/admin/subsections/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Убираем связь с документами
+    dbRun("UPDATE documents SET subsection_id = NULL WHERE subsection_id = ?", [id]);
+    
+    // Удаляем подраздел
+    dbRun("DELETE FROM subsections WHERE id = ?", [id]);
+    
+    console.log(`🗑️ Удален подраздел ID: ${id}`);
+    
+    res.json({ success: true, message: 'Подраздел удален' });
+  } catch (error) {
+    console.error('❌ Ошибка удаления подраздела:', error);
     res.status(500).json({ error: 'Ошибка при удалении' });
   }
 });

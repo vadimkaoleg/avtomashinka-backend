@@ -142,10 +142,24 @@ async function downloadFromFTP(fileName, localPath) {
           console.log(`   ⚠️ Не удалось войти в папку:`, cdErr.message);
         }
         
-        // Скачиваем файл
-        await client.downloadTo(localPath, fileName);
+        // 📥 Скачиваем файл в буфер (а не напрямую в файл)
+        // Это гарантирует корректную обработку бинарных данных
+        const buffer = await client.downloadToBuffer(fileName);
         
-        console.log(`✅ Файл скачан с FTP: ${fileName}`);
+        if (!buffer || buffer.length === 0) {
+          console.error(`❌ Пустой буфер при скачивании с FTP: ${fileName}`);
+          resolve(false);
+          return;
+        }
+        
+        console.log(`   📊 Буфер получен: ${buffer.length} байт, тип: ${buffer.constructor.name}`);
+        
+        // Записываем буфер в файл (используем Buffer.from для гарантии правильного типа)
+        const fileBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+        fs.writeFileSync(localPath, fileBuffer);
+        console.log(`   ✅ Записано в файл: ${localPath}, размер: ${fileBuffer.length} байт`);
+        
+        console.log(`✅ Файл скачан с FTP: ${fileName} (${buffer.length} bytes)`);
         
         // Проверяем что скачалось
         if (fs.existsSync(localPath)) {
@@ -977,8 +991,9 @@ app.get('/api/download/:filename', async (req, res) => {
     res.setHeader('Expires', '0');
     res.setHeader('Content-Transfer-Encoding', 'binary');
     
-    // Читаем файл и отдаем
+    // Читаем файл и отдаем (используем readFileSync для бинарных файлов)
     const fileBuffer = fs.readFileSync(filePath);
+    console.log(`   📤 Отдаем файл клиенту: ${fileBuffer.length} bytes, тип: ${fileBuffer.constructor.name}`);
     res.end(fileBuffer);
     
   } catch (error) {

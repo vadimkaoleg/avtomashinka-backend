@@ -976,12 +976,13 @@ const FILES_BASE_URL = 'https://avmashinka.ru/uploads/named';
 app.get('/api/documents', async (req, res) => {
   try {
     // Получаем документы с информацией о разделах
+    // Исключаем .json файлы (backup.json)
     const documents = dbAll(`
       SELECT d.*, s.name as section_name, sub.name as subsection_name 
       FROM documents d
       LEFT JOIN sections s ON d.section_id = s.id
       LEFT JOIN subsections sub ON d.subsection_id = sub.id
-      WHERE d.is_visible = 1 
+      WHERE d.is_visible = 1 AND d.filename NOT LIKE '%.json'
       ORDER BY d.sort_order ASC, d.created_at DESC
     `);
     
@@ -1006,11 +1007,13 @@ app.get('/api/documents', async (req, res) => {
 app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   try {
     // Получаем документы с информацией о разделах
+    // Исключаем .json файлы (backup.json)
     const documents = dbAll(`
       SELECT d.*, s.name as section_name, sub.name as subsection_name 
       FROM documents d
       LEFT JOIN sections s ON d.section_id = s.id
       LEFT JOIN subsections sub ON d.subsection_id = sub.id
+      WHERE d.filename NOT LIKE '%.json'
       ORDER BY d.sort_order ASC, d.created_at DESC
     `);
 

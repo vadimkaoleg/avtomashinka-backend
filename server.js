@@ -1165,10 +1165,14 @@ app.get('/api/download-dataurl/:filename', async (req, res) => {
     
     console.log(`   ✅ Data URL создан, длина: ${dataUrl.length}`);
     
-    // Отдаём как text/plain (не JSON) - браузер сможет открыть напрямую
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    // Используем end() с буфером для гарантии целостности
+    const buffer = Buffer.from(dataUrl, 'utf8');
+    res.removeHeader('Content-Encoding');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', buffer.length);
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(originalName)}"`);
-    res.send(dataUrl);
+    res.end(buffer);
     
   } catch (error) {
     console.error('❌ Ошибка:', error.message);

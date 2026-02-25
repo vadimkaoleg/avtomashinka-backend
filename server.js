@@ -1019,10 +1019,27 @@ async function syncFilesFromFTP() {
   try {
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    await client.cd(FTP_CONFIG.remotePath);
     
+    // Читаем список файлов из папки uploads (основные файлы)
+    await client.cd(FTP_CONFIG.remotePath);
     const fileList = await client.list();
     console.log(`📂 Файлов на FTP: ${fileList.length}`);
+    
+    // Читаем список файлов из папки uploads/named (имена файлов)
+    let nameMap = {};
+    try {
+      await client.cd(FTP_CONFIG.remotePath + '/named');
+      const namedFiles = await client.list();
+      console.log(`📂 Файлов с именами: ${namedFiles.length}`);
+      
+      for (const nf of namedFiles) {
+        // Имя файла - это UUID, содержимое - оригинальное название
+        const uuid = nf.name.replace(/\.[^/.]+$/, '');
+        nameMap[uuid] = nf.name;
+      }
+    } catch (e) {
+      console.log('⚠️ Папка uploads/named не найдена');
+    }
     
     let downloaded = 0;
     let added = 0;
@@ -1041,19 +1058,14 @@ async function syncFilesFromFTP() {
         downloaded++;
       }
       
-      // Добавляем запись в БД
-      // Извлекаем оригинальное имя из UUID
-      let originalName = file.name.replace(/^[0-9a-f-]{36}\./, '');
-      
-      // Если не удалось извлечь - используем имя файла как есть
-      if (!originalName || originalName === file.name) {
-        originalName = file.name;
-      }
+      // Получаем оригинальное имя
+      const uuid = file.name.replace(/\.[^/.]+$/, '');
+      let originalName = nameMap[uuid] || file.name;
       
       // Title - это имя файла без расширения
       const title = originalName.replace(/\.[^/.]+$/, '') || 'Документ';
       
-      console.log(`   → title="${title}", filename="${file.name}", original="${originalName}", size=${file.size}`);
+      console.log(`   → "${title}" (${file.name})`);
       
       db.run(
         `INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?)`,

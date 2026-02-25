@@ -38,10 +38,10 @@ const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
 // 📤 Конфигурация SFTP для бэкапа файлов
-// ПORT 22 может быть заблокирован на некоторых хостингах
+// ПОРТЫ: 22, 2222, 2022 могут быть доступны
 const SFTP_CONFIG = {
   host: process.env.SFTP_HOST || '88.212.206.32',
-  port: parseInt(process.env.SFTP_PORT) || 22,
+  port: parseInt(process.env.SFTP_PORT) || 2222, // Пробуем 2222 вместо 22
   username: process.env.SFTP_USER || 'cl433989_render',
   password: process.env.SFTP_PASS || 'jA1yU5cC9w',
   remotePath: process.env.SFTP_PATH || '/uploads'

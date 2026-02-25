@@ -952,29 +952,41 @@ app.get('/api/download/:filename', async (req, res) => {
     // Всегда получаем файл напрямую с FTP (не из локальной копии)
     client.ftp.verbose = false;
     
-    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
-    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    await client.pasv();
-    await client.binary();
+    // Используем готовую функцию downloadFromFTP, которая уже протестирована
+    // Скачиваем во временный файл, затем отдаем
+    const tempPath = path.join(uploadsDir, `temp_${Date.now()}_${filename}`);
     
-    await client.cd(FTP_CONFIG.remotePath);
+    const downloaded = await downloadFromFTP(filename, tempPath);
     
-    // Проверяем что файл существует
-    const fileList = await client.list();
-    const fileInfo = fileList.find(f => f.name === filename);
-    
-    if (!fileInfo) {
-      console.log(`❌ Файл не найден на FTP: ${filename}`);
+    if (!downloaded) {
+      // Если нет на FTP - пробуем локально
+      const localPath = path.join(uploadsDir, filename);
+      if (fs.existsSync(localPath)) {
+        console.log(`   📄 Файл найден локально: ${filename}`);
+        const fileBuffer = fs.readFileSync(localPath);
+        const mimeType = getMimeType(filename);
+        
+        const disposition = mode === 'preview' ? 'inline' : 'attachment';
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Content-Length', fileBuffer.length);
+        res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(originalName)}"`);
+        return res.send(fileBuffer);
+      }
+      
+      console.log(`❌ Файл не найден: ${filename}`);
       return res.status(404).json({ error: 'Файл не найден' });
     }
     
-    console.log(`   ✅ Файл найден на FTP: ${filename} (${fileInfo.size} bytes)`);
+    console.log(`   ✅ Файл скачан с FTP`);
     
-    // Скачиваем в буфер напрямую
-    const fileBuffer = await client.downloadToBuffer(filename);
+    // Читаем скачанный файл
+    const fileBuffer = fs.readFileSync(tempPath);
     const mimeType = getMimeType(filename);
     
     console.log(`   📤 Отдаем файл: ${fileBuffer.length} bytes`);
+    
+    // Удаляем временный файл
+    try { fs.unlinkSync(tempPath); } catch {}
     
     // Предпросмотр (inline) или скачивание (attachment)
     const disposition = mode === 'preview' ? 'inline' : 'attachment';
@@ -991,10 +1003,6 @@ app.get('/api/download/:filename', async (req, res) => {
   } catch (error) {
     console.error('❌ Ошибка при скачивании файла:', error.message);
     res.status(500).json({ error: 'Ошибка сервера' });
-  } finally {
-    try {
-      await client.close();
-    } catch {}
   }
 });
 

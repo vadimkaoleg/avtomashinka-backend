@@ -409,53 +409,64 @@ app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   }
 });
 
-// Загрузить новый документ
-app.post('/api/admin/documents', authenticateToken, upload.single('file'), async (req, res) => {
+// Загрузить документы (один или несколько)
+app.post('/api/admin/documents', authenticateToken, upload.array('files', 20), async (req, res) => {
   try {
     const { title, description, is_visible = 'true' } = req.body;
-    const file = req.file;
+    const files = req.files;
     
-    if (!file) {
+    if (!files || files.length === 0) {
       return res.status(400).json({ error: 'Файл не загружен' });
     }
     
-    if (!title || title.trim().length === 0) {
-      if (fs.existsSync(file.path)) {
-        fs.unlinkSync(file.path);
-      }
-      return res.status(400).json({ error: 'Укажите название документа' });
+    // Если передан один файл - используем title для него
+    // Если несколько файлов - title используется как префикс
+    const uploadedIds = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const fileTitle = files.length === 1 
+        ? (title || file.originalname.replace(/\.[^/.]+$/, ''))
+        : `${title || file.originalname.replace(/\.[^/.]+$/, '')} ${i + 1}`;
+      
+      const fileType = path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image';
+      
+      const result = dbRun(
+        `INSERT INTO documents 
+         (title, description, filename, original_name, file_size, file_type, is_visible) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          fileTitle,
+          description ? description.trim() : null,
+          file.filename,
+          file.originalname,
+          file.size,
+          fileType,
+          is_visible === 'true' ? 1 : 0
+        ]
+      );
+      
+      uploadedIds.push(result.lastID);
+      console.log(`✅ Загружен документ: ${fileTitle} (${file.originalname})`);
     }
-    
-    const fileType = path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image';
-    
-    const result = dbRun(
-      `INSERT INTO documents 
-       (title, description, filename, original_name, file_size, file_type, is_visible) 
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        title.trim(),
-        description ? description.trim() : null,
-        file.filename,
-        file.originalname,
-        file.size,
-        fileType,
-        is_visible === 'true' ? 1 : 0
-      ]
-    );
-    
-    console.log(`✅ Загружен документ: ${title} (${file.originalname})`);
     
     res.status(201).json({
       success: true,
-      id: result.lastID,
-      message: 'Документ успешно загружен'
+      ids: uploadedIds,
+      count: uploadedIds.length,
+      message: `Загружено ${uploadedIds.length} документ(ов)`
     });
     
   } catch (error) {
     console.error('❌ Ошибка загрузки документа:', error);
     
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
+    // Удаляем загруженные файлы при ошибке
+    if (req.files) {
+      for (const file of req.files) {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      }
     }
     
     res.status(500).json({ 
@@ -642,13 +653,16 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// 📥 РАБОТА С ФАЙЛАМИ
+// 📥 РАБОТА С ФАЙЛАМИ (до middleware /api/*)
 
-// 🔐 FIXED: Скачивание файла (публичный доступ)
+// 🔐 FIXED: Скачивание/предпросмотр файла (публичный доступ)
+// ?mode=preview - для предпросмотра в браузере (inline)
+// ?mode=download или без параметра - для скачивания (attachment)
 app.get('/api/download/:filename', (req, res) => {
   try {
     const filename = req.params.filename;
     const filePath = path.join(uploadsDir, filename);
+    const mode = req.query.mode || 'download';
     
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: 'Файл не найден' });
@@ -658,12 +672,14 @@ app.get('/api/download/:filename', (req, res) => {
     const fileSize = fs.statSync(filePath).size;
     const originalName = req.query.original || filename;
     
-    console.log(`📥 Скачивание файла: ${filename} -> ${originalName}`);
+    console.log(`📥 Файл: ${filename}, mode: ${mode}`);
     
-    // ВСЕГДА скачиваем файл
+    // Предпросмотр (inline) или скачивание (attachment)
+    const disposition = mode === 'preview' ? 'inline' : 'attachment';
+    
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Length', fileSize);
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(originalName)}"`);
+    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(originalName)}"`);
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
@@ -717,6 +733,21 @@ app.get('/api/server-info', authenticateToken, async (req, res) => {
     console.error('❌ Ошибка получения статистики:', error);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
+});
+
+// 🔐 FIXED: Корневой эндпоинт
+app.get('/', (req, res) => {
+  res.json({
+    name: 'AutoMashinka API',
+    version: '1.0.0',
+    status: 'running',
+    endpoints: {
+      documents: 'GET /api/documents',
+      download: 'GET /api/download/:filename',
+      health: 'GET /api/health',
+      login: 'POST /api/login'
+    }
+  });
 });
 
 // 🔐 FIXED: Проверка здоровья сервера

@@ -528,6 +528,40 @@ app.get('/api/verify-token', authenticateToken, (req, res) => {
   });
 });
 
+// 🔐 Смена пароля администратора
+app.put('/api/admin/password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Заполните все поля' });
+    }
+    
+    if (newPassword.length < 4) {
+      return res.status(400).json({ error: 'Новый пароль должен быть минимум 4 символа' });
+    }
+    
+    // Проверяем текущий пароль
+    const user = dbGet("SELECT * FROM admin_users WHERE username = ?", [req.user.username]);
+    
+    const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Неверный текущий пароль' });
+    }
+    
+    // Обновляем пароль
+    const newHash = bcrypt.hashSync(newPassword, 10);
+    dbRun("UPDATE admin_users SET password_hash = ? WHERE username = ?", [newHash, req.user.username]);
+    
+    console.log(`✅ Сменён пароль для пользователя: ${req.user.username}`);
+    
+    res.json({ success: true, message: 'Пароль успешно изменён' });
+  } catch (error) {
+    console.error('❌ Ошибка смены пароля:', error);
+    res.status(500).json({ error: 'Ошибка при смене пароля' });
+  }
+});
+
 // 📁 УПРАВЛЕНИЕ ДОКУМЕНТАМИ
 
 // Получить все документы (публичный доступ) - БЕЗ аутентификации
@@ -557,7 +591,7 @@ app.get('/api/admin/documents', authenticateToken, async (req, res) => {
     const documents = dbAll(
       "SELECT * FROM documents ORDER BY sort_order ASC, created_at DESC"
     );
-    
+
     const docsWithUrls = documents.map(doc => ({
       ...doc,
       downloadUrl: `/api/download/${doc.filename}`,
@@ -588,7 +622,7 @@ app.put('/api/admin/documents/reorder', authenticateToken, async (req, res) => {
     
     console.log(`✅ Обновлен порядок документов: ${order.join(', ')}`);
     
-    res.json({ 
+    res.json({
       success: true, 
       message: 'Порядок документов обновлен' 
     });

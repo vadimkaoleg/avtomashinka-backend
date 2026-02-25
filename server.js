@@ -1134,6 +1134,48 @@ app.get('/api/download-b64/:filename', async (req, res) => {
   }
 });
 
+// 🔍 НОВЫЙ МАРШРУТ: Отдача через готовый Data URL (обходит любые проблемы передачи)
+app.get('/api/download-dataurl/:filename', async (req, res) => {
+  const filename = req.params.filename;
+  const originalName = req.query.original || filename;
+  const filePath = path.join(uploadsDir, filename);
+  
+  try {
+    console.log(`📥 [dataurl] Скачивание файла: ${filename}`);
+    
+    if (!fs.existsSync(filePath)) {
+      const downloaded = await downloadFromFTP(filename, filePath);
+      if (!downloaded) {
+        return res.status(404).json({ error: 'Файл не найден' });
+      }
+    }
+    
+    // Читаем файл и кодируем в base64
+    const fileBuffer = fs.readFileSync(filePath);
+    const base64 = fileBuffer.toString('base64');
+    
+    const headerBytes = fileBuffer.slice(0, 10);
+    const headerStr = headerBytes.toString('ascii').substring(0, 5);
+    console.log(`   🔍 Заголовок: "${headerStr}"`);
+    
+    const mimeType = getMimeType(filename);
+    
+    // Создаём готовый data URL
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+    
+    console.log(`   ✅ Data URL создан, длина: ${dataUrl.length}`);
+    
+    // Отдаём как text/plain (не JSON) - браузер сможет открыть напрямую
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(originalName)}"`);
+    res.send(dataUrl);
+    
+  } catch (error) {
+    console.error('❌ Ошибка:', error.message);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
 // 🔐 FIXED: Скачивание/предпросмотр файла (публичный доступ)
 // ?mode=preview - для предпросмотра в браузере (inline)
 // ?mode=download или без параметра - для скачивания (attachment)

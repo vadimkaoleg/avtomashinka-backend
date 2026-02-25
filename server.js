@@ -1038,7 +1038,7 @@ async function syncFilesFromFTP() {
       }
       
       // Проверяем/добавляем запись в БД
-      const existingDoc = db.prepare('SELECT id FROM documents WHERE filename = ?').get(file.name);
+      const existingDoc = db.prepare('SELECT id, is_visible FROM documents WHERE filename = ?').get(file.name);
       if (!existingDoc) {
         // Извлекаем оригинальное имя из UUID
         const originalName = file.name.replace(/^[0-9a-f-]{36}\./, '');
@@ -1057,6 +1057,11 @@ async function syncFilesFromFTP() {
         );
         console.log(`📝 Добавлен в БД: ${file.name}`);
         added++;
+      } else if (existingDoc.is_visible === 0) {
+        // Активируем скрытые документы
+        db.prepare('UPDATE documents SET is_visible = 1 WHERE id = ?').run(existingDoc.id);
+        console.log(`👁️ Активирован документ: ${file.name}`);
+        added++;
       }
     }
     
@@ -1071,6 +1076,22 @@ async function syncFilesFromFTP() {
     } catch {}
   }
 }
+
+// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить документы в БД
+app.get('/api/debug/documents', (req, res) => {
+  try {
+    const all = dbAll("SELECT id, title, filename, is_visible, file_type FROM documents");
+    const visible = dbAll("SELECT id, title, filename, is_visible FROM documents WHERE is_visible = 1");
+    
+    res.json({ 
+      total: all.length,
+      visible: visible.length,
+      documents: all
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Синхронизация всех файлов с FTP
 app.get('/api/sync-ftp', async (req, res) => {

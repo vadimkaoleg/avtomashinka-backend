@@ -87,6 +87,26 @@ async function uploadToFTP(localFilePath, fileName) {
     // Загружаем файл
     await client.uploadFrom(localFilePath, fileName);
     
+    // ✅ Проверяем что файл загрузился корректно - скачиваем обратно и проверяем размер
+    const localStat = fs.statSync(localFilePath);
+    const tempCheckPath = path.join(uploadsDir, `.check_${fileName}`);
+    await client.downloadTo(tempCheckPath, fileName);
+    
+    if (fs.existsSync(tempCheckPath)) {
+      const remoteStat = fs.statSync(tempCheckPath);
+      fs.unlinkSync(tempCheckPath); // Удаляем временный файл
+      
+      if (remoteStat.size !== localStat.size) {
+        console.error(`❌ Размер файла на FTP не совпадает! Локально: ${localStat.size}, на FTP: ${remoteStat.size}`);
+        // Удаляем файл с FTP если размер не совпал
+        try {
+          await client.remove(fileName);
+        } catch {}
+        return false;
+      }
+      console.log(`   ✅ Проверка целостности прошла: ${localStat.size} байт`);
+    }
+    
     console.log(`✅ Файл загружен на FTP: ${fileName}`);
     return true;
   } catch (error) {
@@ -142,31 +162,39 @@ async function downloadFromFTP(fileName, localPath) {
           console.log(`   ⚠️ Не удалось войти в папку:`, cdErr.message);
         }
         
-        // 📥 Скачиваем файл в буфер (а не напрямую в файл)
-        // Это гарантирует корректную обработку бинарных данных
-        const buffer = await client.downloadToBuffer(fileName);
+        // 📥 Скачиваем файл напрямую в файл (а не в буфер)
+        // Это гарантирует бинарную целостность
+        await client.downloadTo(localPath, fileName);
         
-        if (!buffer || buffer.length === 0) {
-          console.error(`❌ Пустой буфер при скачивании с FTP: ${fileName}`);
+        // Проверяем что файл скачался
+        if (!fs.existsSync(localPath)) {
+          console.error(`❌ Файл не скачался: ${fileName}`);
           resolve(false);
           return;
         }
         
-        console.log(`   📊 Буфер получен: ${buffer.length} байт, тип: ${buffer.constructor.name}`);
+        const stat = fs.statSync(localPath);
+        console.log(`   ✅ Файл скачан: ${localPath}, размер: ${stat.size} bytes`);
         
-        // Записываем буфер в файл (используем Buffer.from для гарантии правильного типа)
-        const fileBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-        fs.writeFileSync(localPath, fileBuffer);
-        console.log(`   ✅ Записано в файл: ${localPath}, размер: ${fileBuffer.length} байт`);
-        
-        console.log(`✅ Файл скачан с FTP: ${fileName} (${buffer.length} bytes)`);
-        
-        // Проверяем что скачалось
-        if (fs.existsSync(localPath)) {
-          const stat = fs.statSync(localPath);
-          console.log(`   📄 Локальный файл: ${stat.size} bytes`);
+        // Проверяем заголовок PDF (должен начинаться с %PDF)
+        if (fileName.toLowerCase().endsWith('.pdf')) {
+          const fd = fs.openSync(localPath, 'r');
+          const headerBuffer = Buffer.alloc(5);
+          fs.readSync(fd, headerBuffer, 0, 5, 0);
+          fs.closeSync(fd);
+          const headerCheck = headerBuffer.toString('ascii');
+          console.log(`   🔍 Заголовок файла: "${headerCheck}" (ожидается "%PDF-")`);
+          
+          if (!headerCheck.startsWith('%PDF')) {
+            console.error(`   ⚠️ ВНИМАНИЕ: Файл поврежден! Заголовок: "${headerCheck}"`);
+            // Удаляем поврежденный файл
+            fs.unlinkSync(localPath);
+            resolve(false);
+            return;
+          }
         }
         
+        console.log(`✅ Файл скачан с FTP: ${fileName} (${stat.size} bytes)`);
         resolve(true);
       } catch (error) {
         console.error('❌ Ошибка подключения к FTP:', error.message);
@@ -974,31 +1002,32 @@ app.get('/api/download/:filename', async (req, res) => {
       console.log(`   📄 Файл найден локально: ${filename}`);
     }
     
-    // Проверяем размер файла
-    const stat = fs.statSync(filePath);
-    console.log(`   📄 Размер файла: ${stat.size} bytes`);
+    // Читаем файл напрямую в буфер (бинарный режим)
+    const fileBuffer = fs.readFileSync(filePath);
+    console.log(`   📄 Размер файла: ${fileBuffer.length} bytes`);
     
     const mimeType = getMimeType(filename);
     
-    // Всегда отдаем файл как буфер с правильными заголовками
+    // Устанавливаем заголовки для бинарной передачи
     res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Content-Length', fileBuffer.length);
     res.setHeader('Content-Disposition', mode === 'preview' 
       ? `inline; filename="${encodeURIComponent(originalName)}"` 
       : `attachment; filename="${encodeURIComponent(originalName)}"`);
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    res.setHeader('Content-Transfer-Encoding', 'binary');
     
-    // Читаем файл и отдаем (используем readFileSync для бинарных файлов)
-    const fileBuffer = fs.readFileSync(filePath);
-    console.log(`   📤 Отдаем файл клиенту: ${fileBuffer.length} bytes, тип: ${fileBuffer.constructor.name}`);
+    // Отдаем файл напрямую через end() - это гарантирует бинарную целостность
+    console.log(`   📤 Отдаем файл напрямую: ${filename}`);
     res.end(fileBuffer);
+    console.log(`   ✅ Файл успешно отдан`);
     
   } catch (error) {
     console.error('❌ Ошибка при скачивании файла:', error.message);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Ошибка сервера' });
+    }
   }
 });
 
@@ -1080,14 +1109,18 @@ app.get('/uploads/:filename', async (req, res) => {
     }
     
     const mimeType = getMimeType(filename);
+    // Читаем файл напрямую в буфер (бинарный режим)
     const fileBuffer = fs.readFileSync(filePath);
     
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Length', fileBuffer.length);
-    res.send(fileBuffer);
+    // Используем end() для гарантии бинарной целостности
+    res.end(fileBuffer);
   } catch (error) {
     console.error('❌ Ошибка статики:', error);
-    res.status(500).send('Ошибка сервера');
+    if (!res.headersSent) {
+      res.status(500).send('Ошибка сервера');
+    }
   }
 });
 
@@ -1195,6 +1228,8 @@ app.get('/api/sync-ftp', async (req, res) => {
     
     const results = [];
     for (const file of fileList) {
+      if (file.name === 'named' || file.name.startsWith('.')) continue;
+      
       const localPath = path.join(uploadsDir, file.name);
       
       if (!fs.existsSync(localPath)) {
@@ -1216,6 +1251,81 @@ app.get('/api/sync-ftp', async (req, res) => {
   } catch (error) {
     console.error('❌ Ошибка синхронизации:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить целостность файлов на FTP
+app.get('/api/debug/ftp-check', async (req, res) => {
+  const client = new FTPClient();
+  
+  try {
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.send('TYPE I'); // Бинарный режим
+    await client.cd(FTP_CONFIG.remotePath);
+    
+    const fileList = await client.list();
+    console.log(`📂 Файлов на FTP: ${fileList.length}`);
+    
+    const results = [];
+    
+    for (const file of fileList) {
+      if (file.name === 'named' || file.name.startsWith('.')) continue;
+      
+      console.log(`🔍 Проверяем файл на FTP: ${file.name}`);
+      
+      // Скачиваем в буфер для проверки
+      const buffer = await client.downloadToBuffer(file.name);
+      
+      if (!buffer || buffer.length === 0) {
+        results.push({ name: file.name, status: 'empty', size: file.size });
+        continue;
+      }
+      
+      // Проверяем заголовок
+      const header = buffer.slice(0, 10).toString('ascii').trim();
+      const isPdf = file.name.toLowerCase().endsWith('.pdf');
+      
+      if (isPdf && !header.startsWith('%PDF')) {
+        results.push({ 
+          name: file.name, 
+          status: 'CORRUPTED', 
+          size: file.size,
+          downloadedSize: buffer.length,
+          header: header
+        });
+        console.error(`   ❌ Файл поврежден: ${file.name}, заголовок: "${header}"`);
+      } else {
+        results.push({ 
+          name: file.name, 
+          status: 'OK', 
+          size: file.size,
+          downloadedSize: buffer.length,
+          header: header.substring(0, 20)
+        });
+        console.log(`   ✅ Файл целый: ${file.name}`);
+      }
+    }
+    
+    await client.close();
+    
+    const corrupted = results.filter(r => r.status === 'CORRUPTED');
+    
+    res.json({ 
+      success: true, 
+      total: results.length,
+      ok: results.length - corrupted.length,
+      corrupted: corrupted.length,
+      files: results,
+      message: corrupted.length > 0 
+        ? `ВНИМАНИЕ: ${corrupted.length} файл(ов) повреждено на FTP!`
+        : 'Все файлы на FTP целые'
+    });
+  } catch (error) {
+    console.error('❌ Ошибка проверки FTP:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    try { await client.close(); } catch {}
   }
 });
 

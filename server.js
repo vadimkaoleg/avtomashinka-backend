@@ -1029,6 +1029,10 @@ async function syncFilesFromFTP() {
     // Файлы уже имеют нормальные имена на FTP
     console.log(`   📄 Используем имена файлов с FTP`);
     
+    // Пропускаем файл named (служебный)
+    const actualFiles = fileList.filter(f => f.name !== 'named');
+    console.log(`   📂 Файлов для загрузки: ${actualFiles.length}`);
+    
     let downloaded = 0;
     let added = 0;
     
@@ -1036,7 +1040,13 @@ async function syncFilesFromFTP() {
     db.run('DELETE FROM documents');
     console.log('🗑️ Очищена таблица документов');
     
-    for (const file of fileList) {
+    for (const file of actualFiles) {
+      // Пропускаем служебный файл named
+      if (file.name === 'named') {
+        console.log(`   ⏭️ Пропускаем служебный файл: named`);
+        continue;
+      }
+      
       const localPath = path.join(uploadsDir, file.name);
       
       // Скачиваем если нет локально

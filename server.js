@@ -67,7 +67,10 @@ async function uploadToFTP(localFilePath, fileName) {
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     
-    console.log(`✅ FTP подключение установлено`);
+    // 🔧 ВАЖНО: Переключаем в бинарный режим для корректной передачи файлов
+    await client.send('TYPE I');
+    
+    console.log(`✅ FTP подключение установлено (бинарный режим)`);
     
     // Проверяем/создаем папку на FTP
     try {
@@ -119,7 +122,10 @@ async function downloadFromFTP(fileName, localPath) {
         await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
         await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
         
-        console.log(`   ✅ FTP подключен`);
+        // 🔧 ВАЖНО: Переключаем в бинарный режим для корректной передачи файлов
+        await client.send('TYPE I');
+        
+        console.log(`   ✅ FTP подключен (бинарный режим)`);
         
         // Проверяем список файлов на FTP
         try {
@@ -174,6 +180,9 @@ async function deleteFromFTP(fileName) {
     
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    
+    // 🔧 ВАЖНО: Переключаем в бинарный режим
+    await client.send('TYPE I');
     
     try {
       await client.cd(FTP_CONFIG.remotePath);
@@ -326,12 +335,21 @@ async function initDatabase() {
     if (result.length === 0 || result[0].values.length === 0) {
       db.run(
         "INSERT INTO blocks (name, title, subtitle, content, button_text, button_link, items, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [block.name, block.title, block.subtitle || '', block.content || '', block.button_text || '', block.button_link || '', block.items || null, block.is_visible || 1]
+        [
+          block.name,
+          block.title,
+          block.subtitle || '',
+          block.content || '',
+          block.button_text || '',
+          block.button_link || '',
+          block.items || null,
+          block.is_visible || 1
+        ]
       );
       console.log(`✅ Создан блок: ${block.name}`);
     }
   }
-
+      
   // Проверим все блоки
   const allBlocks = db.exec("SELECT id, name, is_visible FROM blocks");
   console.log('📦 Блоки в БД:', allBlocks);
@@ -1275,8 +1293,7 @@ app.listen(PORT, async () => {
   // 🔄 Синхронизируем файлы с FTP при старте
   await syncFilesFromFTP();
   
-  console.log(`
-🚀 Сервер запущен на http://localhost:${PORT}
+  console.log(`🚀 Сервер запущен на http://localhost:${PORT}
 📁 Файлы хранятся в: ${uploadsDir}
 📊 API доступен по: http://localhost:${PORT}/api
 🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}

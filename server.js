@@ -1025,35 +1025,9 @@ async function syncFilesFromFTP() {
     const fileList = await client.list();
     console.log(`📂 Файлов на FTP: ${fileList.length}`);
     
-    // Читаем имена из файла named (это файл с маппингом UUID -> имена)
-    let nameMap = {};
-    try {
-      const namedFilePath = FTP_CONFIG.remotePath + '/named';
-      console.log(`   Читаем файл named: ${namedFilePath}`);
-      
-      // Скачиваем файл named во временный файл
-      const tempNamedPath = path.join(__dirname, 'temp_named.txt');
-      await client.downloadTo(tempNamedPath, 'named');
-      
-      // Читаем содержимое (формат: uuid=имя_файла)
-      const content = fs.readFileSync(tempNamedPath, 'utf-8');
-      const lines = content.split('\n').filter(l => l.trim());
-      
-      console.log(`   Строк в файле named: ${lines.length}`);
-      
-      for (const line of lines) {
-        const [uuid, originalName] = line.split('=').map(s => s.trim());
-        if (uuid && originalName) {
-          nameMap[uuid] = originalName;
-        }
-      }
-      
-      // Удаляем временный файл
-      fs.unlinkSync(tempNamedPath);
-      console.log(`   ✅ Загружено ${Object.keys(nameMap).length} имен`);
-    } catch (e) {
-      console.log('⚠️ Файл named не найден или ошибка чтения:', e.message);
-    }
+    // Используем имена файлов напрямую (без UUID)
+    // Файлы уже имеют нормальные имена на FTP
+    console.log(`   📄 Используем имена файлов с FTP`);
     
     let downloaded = 0;
     let added = 0;
@@ -1072,9 +1046,8 @@ async function syncFilesFromFTP() {
         downloaded++;
       }
       
-      // Получаем оригинальное имя
-      const uuid = file.name.replace(/\.[^/.]+$/, '');
-      let originalName = nameMap[uuid] || file.name;
+      // Используем имя файла как есть (без UUID)
+      const originalName = file.name;
       
       // Title - это имя файла без расширения
       const title = originalName.replace(/\.[^/.]+$/, '') || 'Документ';

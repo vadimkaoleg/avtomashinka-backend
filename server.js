@@ -307,6 +307,182 @@ async function deleteFromFTP(fileName) {
   }
 }
 
+// 📦 JSON БЭКАП НА FTP
+
+const BACKUP_FILE = 'backup.json';
+
+// Сохранить полный бэкап на FTP
+async function saveBackupToFTP() {
+  if (!ftpEnabled) {
+    console.log('⏭️ FTP отключен, пропускаем сохранение бэкапа');
+    return false;
+  }
+  
+  const client = new FTPClient();
+  
+  try {
+    // Собираем все данные из БД
+    const backup = {
+      timestamp: new Date().toISOString(),
+      blocks: dbAll("SELECT * FROM blocks"),
+      documents: dbAll("SELECT * FROM documents"),
+      sections: dbAll("SELECT * FROM sections"),
+      subsections: dbAll("SELECT * FROM subsections"),
+      admin_users: dbAll("SELECT id, username, created_at FROM admin_users") // Без паролей!
+    };
+    
+    // Добавляем items в blocks (парсим JSON)
+    backup.blocks = backup.blocks.map(block => ({
+      ...block,
+      items: block.items ? JSON.parse(block.items) : null
+    }));
+    
+    const backupJson = JSON.stringify(backup, null, 2);
+    const backupPath = path.join(__dirname, BACKUP_FILE);
+    
+    // Записываем локально
+    fs.writeFileSync(backupPath, backupJson, 'utf8');
+    
+    // Загружаем на FTP
+    client.ftp.verbose = false;
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.send('TYPE I');
+    
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+    } catch {
+      try {
+        await client.mkdir(FTP_CONFIG.remotePath);
+        await client.cd(FTP_CONFIG.remotePath);
+      } catch (mkdirErr) {
+        console.warn('⚠️ Не удалось создать папку на FTP:', mkdirErr.message);
+      }
+    }
+    
+    await client.uploadFrom(backupPath, BACKUP_FILE);
+    
+    console.log(`✅ JSON бэкап сохранен на FTP: ${backupJson.length} байт`);
+    return true;
+  } catch (error) {
+    console.error('❌ Ошибка сохранения бэкапа на FTP:', error.message);
+    return false;
+  } finally {
+    try {
+      await client.close();
+    } catch {}
+  }
+}
+
+// Загрузить бэкап с FTP при старте
+async function loadBackupFromFTP() {
+  if (!ftpEnabled) {
+    console.log('⏭️ FTP отключен, пропускаем загрузку бэкапа');
+    return false;
+  }
+  
+  const client = new FTPClient();
+  const backupPath = path.join(__dirname, BACKUP_FILE);
+  
+  try {
+    client.ftp.verbose = false;
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.send('TYPE I');
+    
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+    } catch {
+      console.log('⚠️ Папка FTP не найдена, бэкап не будет загружен');
+      return false;
+    }
+    
+    // Проверяем есть ли файл бэкапа
+    const fileList = await client.list();
+    const backupFile = fileList.find(f => f.name === BACKUP_FILE);
+    
+    if (!backupFile) {
+      console.log('📋 Бэкап на FTP не найден, используем текущую БД');
+      return false;
+    }
+    
+    // Скачиваем бэкап
+    await client.downloadTo(backupPath, BACKUP_FILE);
+    
+    if (!fs.existsSync(backupPath)) {
+      console.error('❌ Бэкап не скачался');
+      return false;
+    }
+    
+    const backupJson = fs.readFileSync(backupPath, 'utf8');
+    const backup = JSON.parse(backupJson);
+    
+    console.log(`📥 Загружен бэкап от ${backup.timestamp}`);
+    
+    // Восстанавливаем данные
+    if (backup.blocks && backup.blocks.length > 0) {
+      // Очищаем таблицы
+      db.run("DELETE FROM blocks");
+      
+      // Восстанавливаем блоки
+      for (const block of backup.blocks) {
+        const itemsJson = block.items ? JSON.stringify(block.items) : null;
+        db.run(
+          `INSERT INTO blocks (id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            block.id,
+            block.name,
+            block.title || '',
+            block.subtitle || '',
+            block.content || '',
+            block.button_text || '',
+            block.button_link || '',
+            block.image || '',
+            itemsJson,
+            block.is_visible ? 1 : 0,
+            block.updated_at || new Date().toISOString()
+          ]
+        );
+      }
+      console.log(`✅ Восстановлено ${backup.blocks.length} блоков`);
+    }
+    
+    if (backup.sections && backup.sections.length > 0) {
+      db.run("DELETE FROM sections");
+      for (const section of backup.sections) {
+        db.run(
+          `INSERT INTO sections (id, name, sort_order, is_visible, created_at) VALUES (?, ?, ?, ?, ?)`,
+          [section.id, section.name, section.sort_order || 0, section.is_visible ? 1 : 0, section.created_at]
+        );
+      }
+      console.log(`✅ Восстановлено ${backup.sections.length} разделов`);
+    }
+    
+    if (backup.subsections && backup.subsections.length > 0) {
+      db.run("DELETE FROM subsections");
+      for (const subsection of backup.subsections) {
+        db.run(
+          `INSERT INTO subsections (id, section_id, name, sort_order, is_visible, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          [subsection.id, subsection.section_id, subsection.name, subsection.sort_order || 0, subsection.is_visible ? 1 : 0, subsection.created_at]
+        );
+      }
+      console.log(`✅ Восстановлено ${backup.subsections.length} подразделов`);
+    }
+    
+    saveDatabase();
+    console.log('✅ Полный бэкап восстановлен из FTP');
+    return true;
+  } catch (error) {
+    console.error('❌ Ошибка загрузки бэкапа:', error.message);
+    return false;
+  } finally {
+    try {
+      await client.close();
+    } catch {}
+  }
+}
+
 // MIME types
 function getMimeType(filename) {
   const ext = path.extname(filename).toLowerCase();
@@ -1046,6 +1222,9 @@ app.post('/api/admin/sections', authenticateToken, async (req, res) => {
 
     console.log(`✅ Создан раздел: ${name} (ID: ${result.lastID})`);
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.status(201).json({
       success: true, 
       id: result.lastID,
@@ -1080,6 +1259,9 @@ app.put('/api/admin/sections/:id', authenticateToken, async (req, res) => {
     
     console.log(`✅ Обновлен раздел ID: ${id}`);
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.json({ success: true, message: 'Раздел обновлен' });
   } catch (error) {
     console.error('❌ Ошибка обновления раздела:', error);
@@ -1104,6 +1286,9 @@ app.delete('/api/admin/sections/:id', authenticateToken, async (req, res) => {
     
     console.log(`🗑️ Удален раздел ID: ${id}`);
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.json({ success: true, message: 'Раздел удален' });
   } catch (error) {
     console.error('❌ Ошибка удаления раздела:', error);
@@ -1119,7 +1304,7 @@ app.post('/api/admin/subsections', authenticateToken, async (req, res) => {
     if (!section_id) {
       return res.status(400).json({ error: 'ID раздела обязателен' });
     }
-    
+
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Название подраздела обязательно' });
     }
@@ -1136,11 +1321,14 @@ app.post('/api/admin/subsections', authenticateToken, async (req, res) => {
       "INSERT INTO subsections (section_id, name, sort_order, is_visible) VALUES (?, ?, ?, ?)",
       [section_id, name.trim(), newOrder, is_visible ? 1 : 0]
     );
-    
+
     console.log(`✅ Создан подраздел: ${name} (ID: ${result.lastID})`);
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.status(201).json({
-      success: true,
+      success: true, 
       id: result.lastID,
       message: 'Подраздел создан'
     });
@@ -1171,9 +1359,12 @@ app.put('/api/admin/subsections/:id', authenticateToken, async (req, res) => {
         id
       ]
     );
-    
+
     console.log(`✅ Обновлен подраздел ID: ${id}`);
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.json({ success: true, message: 'Подраздел обновлен' });
   } catch (error) {
     console.error('❌ Ошибка обновления подраздела:', error);
@@ -1194,6 +1385,9 @@ app.delete('/api/admin/subsections/:id', authenticateToken, async (req, res) => 
     
     console.log(`🗑️ Удален подраздел ID: ${id}`);
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.json({ success: true, message: 'Подраздел удален' });
   } catch (error) {
     console.error('❌ Ошибка удаления подраздела:', error);
@@ -1208,7 +1402,7 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
     if (!file) {
       return res.status(400).json({ error: 'Файл не загружен' });
     }
-
+    
     // 📤 Загружаем изображение на FTP бэкап (не блокирует ответ)
     const ftpResult = await uploadToFTP(file.path, file.filename);
     if (ftpResult) {
@@ -1217,8 +1411,8 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
       console.warn(`⚠️ FTP бэкап изображения НЕ создан: ${file.filename}`);
     }
 
-    res.json({
-      success: true,
+    res.json({ 
+      success: true, 
       filename: file.filename,
       url: `/uploads/${file.filename}`
     });
@@ -1312,6 +1506,9 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
     );
 
     console.log(`✅ Обновлен блок ID: ${id} (${existingBlock.name})`);
+
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
 
     res.json({ success: true, message: 'Блок обновлен' });
   } catch (error) {
@@ -1955,6 +2152,9 @@ app.use((err, req, res, next) => {
 
 // 🔐 FIXED: Запуск сервера с информацией о JWT
 app.listen(PORT, async () => {
+  // 📥 Пробуем загрузить бэкап с FTP
+  await loadBackupFromFTP();
+  
   // 🔄 Синхронизируем файлы с FTP при старте
   await syncFilesFromFTP();
   

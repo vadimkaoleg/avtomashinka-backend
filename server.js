@@ -1025,18 +1025,43 @@ async function syncFilesFromFTP() {
     console.log(`📂 Файлов на FTP: ${fileList.length}`);
     
     let downloaded = 0;
+    let added = 0;
+    
     for (const file of fileList) {
       const localPath = path.join(uploadsDir, file.name);
       
+      // Скачиваем если нет локально
       if (!fs.existsSync(localPath)) {
         console.log(`📥 Скачиваю: ${file.name}`);
         await client.downloadTo(localPath, file.name);
         downloaded++;
       }
+      
+      // Проверяем/добавляем запись в БД
+      const existingDoc = db.prepare('SELECT id FROM documents WHERE filename = ?').get(file.name);
+      if (!existingDoc) {
+        // Извлекаем оригинальное имя из UUID
+        const originalName = file.name.replace(/^[0-9a-f-]{36}\./, '');
+        
+        db.prepare(`
+          INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          originalName.replace('.pdf', '') || 'Документ',
+          '',
+          file.name,
+          originalName,
+          file.size,
+          'pdf',
+          1
+        );
+        console.log(`📝 Добавлен в БД: ${file.name}`);
+        added++;
+      }
     }
     
-    console.log(`✅ Синхронизация завершена: ${downloaded} новых файлов`);
-    return downloaded;
+    console.log(`✅ Синхронизация завершена: ${downloaded} файлов скачано, ${added} добавлено в БД`);
+    return downloaded + added;
   } catch (error) {
     console.error('❌ Ошибка синхронизации при старте:', error.message);
     return 0;

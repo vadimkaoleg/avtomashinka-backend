@@ -101,31 +101,50 @@ async function uploadToFTP(localFilePath, fileName) {
 }
 
 // Функция скачивания файла с FTP (если нет локально)
+// Всегда пытается подключиться, не зависит от ftpEnabled
 async function downloadFromFTP(fileName, localPath) {
-  if (!ftpEnabled) {
-    console.log(`⏭️ FTP отключен, не могу скачать: ${fileName}`);
-    return false;
-  }
-  
   const client = new FTPClient();
   
   try {
     console.log(`📥 Скачивание с FTP: ${fileName}...`);
+    console.log(`   FTP хост: ${FTP_CONFIG.host}:${FTP_CONFIG.port}, путь: ${FTP_CONFIG.remotePath}`);
     
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    console.log(`   ✅ FTP подключен`);
     
+    // Проверяем список файлов на FTP для отладки
     try {
       await client.cd(FTP_CONFIG.remotePath);
+      const fileList = await client.list();
+      console.log(`   📂 Файлов на FTP: ${fileList.length}`);
+      const found = fileList.find(f => f.name === fileName);
+      if (found) {
+        console.log(`   ✅ Найден файл на FTP: ${fileName} (${found.size} bytes)`);
+      } else {
+        console.log(`   ⚠️ Файл НЕ найден на FTP! Список файлов:`, fileList.map(f => f.name).slice(0, 10));
+      }
+    } catch (cdErr) {
+      console.log(`   ⚠️ Не удалось войти в папку ${FTP_CONFIG.remotePath}:`, cdErr.message);
+    }
+    
+    try {
       await client.downloadTo(localPath, fileName);
       console.log(`✅ Файл скачан с FTP: ${fileName}`);
+      
+      // Проверяем что скачалось
+      if (fs.existsSync(localPath)) {
+        const stat = fs.statSync(localPath);
+        console.log(`   📄 Локальный файл: ${stat.size} bytes`);
+      }
+      
       return true;
-    } catch {
-      console.log(`⚠️ Файл не найден на FTP: ${fileName}`);
+    } catch (downloadErr) {
+      console.log(`   ❌ Ошибка скачивания:`, downloadErr.message);
       return false;
     }
   } catch (error) {
-    console.error('❌ Ошибка скачивания с FTP:', error.message);
+    console.error('❌ Ошибка подключения к FTP:', error.message);
     return false;
   } finally {
     try {
@@ -863,14 +882,17 @@ app.get('/api/download/:filename', async (req, res) => {
     const filePath = path.join(uploadsDir, filename);
     const mode = req.query.mode || 'download';
     
-    // 📥 Если файла нет локально - пробуем скачать с FTP
+    // 📥 Если файла нет локально - пробуем скачать с FTP (без проверки ftpEnabled)
     if (!fs.existsSync(filePath)) {
-      console.log(`📥 Файл не найден локально, пробуем скачать с FTP: ${filename}`);
+      console.log(`📥 Файл не найден локально: ${filename}, пробуем с FTP...`);
       const downloaded = await downloadFromFTP(filename, filePath);
       if (!downloaded) {
+        console.log(`❌ Файл не найден ни локально, ни на FTP: ${filename}`);
         return res.status(404).json({ error: 'Файл не найден' });
       }
-      console.log(`✅ Файл скачан с FTP: ${filename}`);
+      console.log(`✅ Файл восстановлен с FTP: ${filename}`);
+    } else {
+      console.log(`📄 Файл найден локально: ${filename}`);
     }
     
     const mimeType = getMimeType(filename);

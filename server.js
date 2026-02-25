@@ -110,61 +110,58 @@ async function uploadToFTP(localFilePath, fileName) {
 async function downloadFromFTP(fileName, localPath) {
   const client = new FTPClient();
   
-  try {
-    console.log(`📥 Скачивание с FTP: ${fileName}...`);
-    console.log(`   FTP хост: ${FTP_CONFIG.host}:${FTP_CONFIG.port}, путь: ${FTP_CONFIG.remotePath}`);
-    
-    client.ftp.verbose = false;
-    
-    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
-    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    await client.binary();
-    
-    console.log(`   ✅ FTP подключен (binary mode)`);
-    
-    // Проверяем список файлов на FTP для отладки
-    try {
-      await client.cd(FTP_CONFIG.remotePath);
-      const fileList = await client.list();
-      console.log(`   📂 Файлов на FTP: ${fileList.length}`);
-      const found = fileList.find(f => f.name === fileName);
-      if (found) {
-        console.log(`   ✅ Найден файл на FTP: ${fileName} (${found.size} bytes)`);
-      } else {
-        console.log(`   ⚠️ Файл НЕ найден на FTP! Список файлов:`, fileList.map(f => f.name).slice(0, 10));
+  return new Promise((resolve) => {
+    (async () => {
+      try {
+        console.log(`📥 Скачивание с FTP: ${fileName}...`);
+        console.log(`   FTP хост: ${FTP_CONFIG.host}:${FTP_CONFIG.port}, путь: ${FTP_CONFIG.remotePath}`);
+        
+        client.ftp.verbose = false;
+        
+        await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+        await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+        await client.binary();
+        
+        console.log(`   ✅ FTP подключен (binary mode)`);
+        
+        // Проверяем список файлов на FTP
+        try {
+          await client.cd(FTP_CONFIG.remotePath);
+          const fileList = await client.list();
+          console.log(`   📂 Файлов на FTP: ${fileList.length}`);
+          const found = fileList.find(f => f.name === fileName);
+          if (found) {
+            console.log(`   ✅ Найден файл на FTP: ${fileName} (${found.size} bytes)`);
+          } else {
+            console.log(`   ⚠️ Файл НЕ найден на FTP!`);
+          }
+        } catch (cdErr) {
+          console.log(`   ⚠️ Не удалось войти в папку:`, cdErr.message);
+        }
+        
+        // Скачиваем через uploadTo - передаем локальный файл
+        // basic-ftp создаст файл автоматически
+        await client.downloadTo(localPath, fileName);
+        
+        console.log(`✅ Файл скачан с FTP: ${fileName}`);
+        
+        // Проверяем что скачалось
+        if (fs.existsSync(localPath)) {
+          const stat = fs.statSync(localPath);
+          console.log(`   📄 Локальный файл: ${stat.size} bytes`);
+        }
+        
+        resolve(true);
+      } catch (error) {
+        console.error('❌ Ошибка подключения к FTP:', error.message);
+        resolve(false);
+      } finally {
+        try {
+          await client.close();
+        } catch {}
       }
-    } catch (cdErr) {
-      console.log(`   ⚠️ Не удалось войти в папку ${FTP_CONFIG.remotePath}:`, cdErr.message);
-    }
-    
-    try {
-      // Скачиваем в буфер, затем записываем в файл (надежнее)
-      const fileBuffer = await client.downloadToBuffer(fileName);
-      
-      // Записываем буфер в файл
-      fs.writeFileSync(localPath, fileBuffer);
-      
-      console.log(`✅ Файл скачан с FTP: ${fileName} (${fileBuffer.length} bytes)`);
-      
-      // Проверяем что скачалось
-      if (fs.existsSync(localPath)) {
-        const stat = fs.statSync(localPath);
-        console.log(`   📄 Локальный файл: ${stat.size} bytes`);
-      }
-      
-      return true;
-    } catch (downloadErr) {
-      console.log(`   ❌ Ошибка скачивания:`, downloadErr.message);
-      return false;
-    }
-  } catch (error) {
-    console.error('❌ Ошибка подключения к FTP:', error.message);
-    return false;
-  } finally {
-    try {
-      await client.close();
-    } catch {}
-  }
+    })();
+  });
 }
 
 // Функция удаления файла с FTP

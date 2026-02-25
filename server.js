@@ -100,6 +100,40 @@ async function uploadToFTP(localFilePath, fileName) {
   }
 }
 
+// Функция скачивания файла с FTP (если нет локально)
+async function downloadFromFTP(fileName, localPath) {
+  if (!ftpEnabled) {
+    console.log(`⏭️ FTP отключен, не могу скачать: ${fileName}`);
+    return false;
+  }
+  
+  const client = new FTPClient();
+  
+  try {
+    console.log(`📥 Скачивание с FTP: ${fileName}...`);
+    
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+      await client.downloadTo(localPath, fileName);
+      console.log(`✅ Файл скачан с FTP: ${fileName}`);
+      return true;
+    } catch {
+      console.log(`⚠️ Файл не найден на FTP: ${fileName}`);
+      return false;
+    }
+  } catch (error) {
+    console.error('❌ Ошибка скачивания с FTP:', error.message);
+    return false;
+  } finally {
+    try {
+      await client.close();
+    } catch {}
+  }
+}
+
 // Функция удаления файла с FTP
 async function deleteFromFTP(fileName) {
   if (!ftpEnabled) {
@@ -823,14 +857,20 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
 // 🔐 FIXED: Скачивание/предпросмотр файла (публичный доступ)
 // ?mode=preview - для предпросмотра в браузере (inline)
 // ?mode=download или без параметра - для скачивания (attachment)
-app.get('/api/download/:filename', (req, res) => {
+app.get('/api/download/:filename', async (req, res) => {
   try {
     const filename = req.params.filename;
     const filePath = path.join(uploadsDir, filename);
     const mode = req.query.mode || 'download';
     
+    // 📥 Если файла нет локально - пробуем скачать с FTP
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Файл не найден' });
+      console.log(`📥 Файл не найден локально, пробуем скачать с FTP: ${filename}`);
+      const downloaded = await downloadFromFTP(filename, filePath);
+      if (!downloaded) {
+        return res.status(404).json({ error: 'Файл не найден' });
+      }
+      console.log(`✅ Файл скачан с FTP: ${filename}`);
     }
     
     const mimeType = getMimeType(filename);
@@ -924,8 +964,29 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// 📁 СТАТИЧЕСКИЕ ФАЙЛЫ
-app.use('/uploads', express.static(uploadsDir));
+// 📁 СТАТИЧЕСКИЕ ФАЙЛЫ (с поддержкой FTP)
+app.use('/uploads', async (req, res, next) => {
+  try {
+    const filename = path.basename(req.path);
+    const filePath = path.join(uploadsDir, filename);
+    
+    // 📥 Если файла нет локально - пробуем скачать с FTP
+    if (!fs.existsSync(filePath)) {
+      console.log(`📥 Файл не найден локально (static), пробуем с FTP: ${filename}`);
+      const downloaded = await downloadFromFTP(filename, filePath);
+      if (!downloaded) {
+        return res.status(404).send('Файл не найден');
+      }
+      console.log(`✅ Файл скачан с FTP: ${filename}`);
+    }
+    
+    // Продолжаем стандартную обработку
+    express.static(uploadsDir)(req, res, next);
+  } catch (error) {
+    console.error('❌ Ошибка статики:', error);
+    res.status(500).send('Ошибка сервера');
+  }
+});
 
 // 🔐 FIXED: Логирование всех запросов (для отладки)
 app.use((req, res, next) => {

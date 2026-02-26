@@ -1088,6 +1088,10 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
       
       const fileType = path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image';
       
+      // Преобразуем section_id и subsection_id в числа или null
+      const parsedSectionId = section_id && section_id !== '' ? parseInt(section_id, 10) : null;
+      const parsedSubsectionId = subsection_id && subsection_id !== '' ? parseInt(subsection_id, 10) : null;
+      
       const result = dbRun(
         `INSERT INTO documents 
          (title, description, filename, original_name, file_size, file_type, is_visible, section_id, subsection_id) 
@@ -1100,10 +1104,12 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
           file.size,
           fileType,
           is_visible === 'true' ? 1 : 0,
-          section_id || null,
-          subsection_id || null
+          parsedSectionId,
+          parsedSubsectionId
         ]
       );
+      
+      console.log(`   📋 Документ привязан к разделу: ${parsedSectionId || 'нет'}, подразделу: ${parsedSubsectionId || 'нет'}`);
       
       uploadedIds.push(result.lastID);
       
@@ -1118,8 +1124,11 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
       console.log(`✅ Загружен документ: ${fileTitle} (${file.originalname})`);
     }
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.status(201).json({
-      success: true,
+      success: true, 
       ids: uploadedIds,
       count: uploadedIds.length,
       message: `Загружено ${uploadedIds.length} документ(ов)`
@@ -1155,6 +1164,14 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Документ не найден' });
     }
     
+    // Преобразуем section_id и subsection_id
+    const newSectionId = section_id !== undefined 
+      ? (section_id && section_id !== '' ? parseInt(section_id, 10) : null) 
+      : existingDoc.section_id;
+    const newSubsectionId = subsection_id !== undefined 
+      ? (subsection_id && subsection_id !== '' ? parseInt(subsection_id, 10) : null) 
+      : existingDoc.subsection_id;
+    
     dbRun(
       `UPDATE documents 
        SET title = ?, description = ?, is_visible = ?, section_id = ?, subsection_id = ? 
@@ -1163,15 +1180,15 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
         title ? title.trim() : existingDoc.title,
         description !== undefined ? description.trim() : existingDoc.description,
         is_visible !== undefined ? (is_visible === 'true' ? 1 : 0) : existingDoc.is_visible,
-        section_id !== undefined ? (section_id ? parseInt(section_id) : null) : existingDoc.section_id,
-        subsection_id !== undefined ? (subsection_id ? parseInt(subsection_id) : null) : existingDoc.subsection_id,
+        newSectionId,
+        newSubsectionId,
         id
       ]
     );
 
-    console.log(`✅ Обновлен документ ID: ${id}`);
+    console.log(`✅ Обновлен документ ID: ${id}, раздел: ${newSectionId || 'нет'}, подраздел: ${newSubsectionId || 'нет'}`);
     
-    res.json({
+    res.json({ 
       success: true, 
       message: 'Документ обновлен' 
     });
@@ -1485,11 +1502,19 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
 app.get('/api/blocks', async (req, res) => {
   try {
     const blocks = dbAll("SELECT * FROM blocks WHERE is_visible = 1");
-    const blocksData = blocks.map(block => ({
-      ...block,
-      items: block.items ? JSON.parse(block.items) : null,
-      is_visible: Boolean(block.is_visible)
-    }));
+    const blocksData = blocks.map(block => {
+      const parsedItems = block.items ? JSON.parse(block.items) : null;
+      // Для блока documents извлекаем legal_info из items
+      const result = {
+        ...block,
+        items: parsedItems,
+        is_visible: Boolean(block.is_visible)
+      };
+      if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
+        result.legal_info = parsedItems.legal_info || '';
+      }
+      return result;
+    });
     res.json(blocksData);
   } catch (error) {
     console.error('❌ Ошибка получения блоков:', error);
@@ -1505,11 +1530,17 @@ app.get('/api/blocks/:name', async (req, res) => {
     if (!block) {
       return res.status(404).json({ error: 'Блок не найден' });
     }
-    res.json({
+    const parsedItems = block.items ? JSON.parse(block.items) : null;
+    const result = {
       ...block,
-      items: block.items ? JSON.parse(block.items) : null,
+      items: parsedItems,
       is_visible: Boolean(block.is_visible)
-    });
+    };
+    // Для блока documents извлекаем legal_info из items
+    if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
+      result.legal_info = parsedItems.legal_info || '';
+    }
+    res.json(result);
   } catch (error) {
     console.error('❌ Ошибка получения блока:', error);
     res.status(500).json({ error: 'Ошибка сервера' });
@@ -1520,11 +1551,19 @@ app.get('/api/blocks/:name', async (req, res) => {
 app.get('/api/admin/blocks', authenticateToken, async (req, res) => {
   try {
     const blocks = await dbAll("SELECT * FROM blocks ORDER BY id");
-    const blocksData = blocks.map(block => ({
-      ...block,
-      items: block.items ? JSON.parse(block.items) : null,
-      is_visible: Boolean(block.is_visible)
-    }));
+    const blocksData = blocks.map(block => {
+      const parsedItems = block.items ? JSON.parse(block.items) : null;
+      const result = {
+        ...block,
+        items: parsedItems,
+        is_visible: Boolean(block.is_visible)
+      };
+      // Для блока documents извлекаем legal_info из items
+      if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
+        result.legal_info = parsedItems.legal_info || '';
+      }
+      return result;
+    });
     res.json(blocksData);
   } catch (error) {
     console.error('❌ Ошибка получения блоков:', error);
@@ -1536,14 +1575,31 @@ app.get('/api/admin/blocks', authenticateToken, async (req, res) => {
 app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, subtitle, content, button_text, button_link, image, items, is_visible } = req.body;
+    const { title, subtitle, content, button_text, button_link, image, items, is_visible, legal_info } = req.body;
 
     const existingBlock = dbGet("SELECT * FROM blocks WHERE id = ?", [id]);
     if (!existingBlock) {
       return res.status(404).json({ error: 'Блок не найден' });
     }
 
-    const itemsJson = items ? JSON.stringify(items) : existingBlock.items;
+    // Для блока documents сохраняем legal_info как часть items
+    let itemsJson;
+    if (existingBlock.name === 'documents' && legal_info !== undefined) {
+      // Парсим существующие items или создаём новый объект с legal_info
+      let existingItems = [];
+      try {
+        existingItems = existingBlock.items ? JSON.parse(existingBlock.items) : [];
+      } catch (e) {
+        existingItems = [];
+      }
+      
+      // Создаём объект с legal_info
+      const docsItems = { legal_info: legal_info };
+      itemsJson = JSON.stringify(docsItems);
+      console.log(`   📋 Сохранено legal_info для documents: ${legal_info ? legal_info.substring(0, 30) + '...' : 'пусто'}`);
+    } else {
+      itemsJson = items ? JSON.stringify(items) : existingBlock.items;
+    }
 
     dbRun(
       `UPDATE blocks 

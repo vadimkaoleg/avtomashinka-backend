@@ -1028,6 +1028,17 @@ app.get('/api/admin/documents', authenticateToken, async (req, res) => {
       ORDER BY d.sort_order ASC, d.created_at DESC
     `);
 
+    // Логируем первый документ для отладки
+    if (documents.length > 0) {
+      console.log('🔍 DOCS LOAD - Первый документ:', {
+        id: documents[0].id,
+        title: documents[0].title,
+        section_id: documents[0].section_id,
+        subsection_id: documents[0].subsection_id,
+        section_name: documents[0].section_name
+      });
+    }
+
     // Используем прямые ссылки на webnames
     const docsWithUrls = documents.map(doc => ({
       ...doc,
@@ -1100,8 +1111,12 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
       const fileType = path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image';
       
       // Преобразуем section_id и subsection_id в числа или null
-      const parsedSectionId = section_id && section_id !== '' ? parseInt(section_id, 10) : null;
-      const parsedSubsectionId = subsection_id && subsection_id !== '' ? parseInt(subsection_id, 10) : null;
+      console.log('🔍 UPLOAD DOC - Входящие данные:', { section_id, subsection_id, typeOfSectionId: typeof section_id });
+      
+      const parsedSectionId = section_id !== null && section_id !== undefined && section_id !== '' ? parseInt(section_id, 10) : null;
+      const parsedSubsectionId = subsection_id !== null && subsection_id !== undefined && subsection_id !== '' ? parseInt(subsection_id, 10) : null;
+      
+      console.log('🔍 UPLOAD DOC - После преобразования:', { parsedSectionId, parsedSubsectionId });
       
       const result = dbRun(
         `INSERT INTO documents 
@@ -1176,12 +1191,16 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
     }
     
     // Преобразуем section_id и subsection_id
+    console.log('🔍 UPDATE DOC - Входящие данные:', { section_id, subsection_id, existingSectionId: existingDoc.section_id });
+    
     const newSectionId = section_id !== undefined 
-      ? (section_id && section_id !== '' ? parseInt(section_id, 10) : null) 
+      ? (section_id !== null && section_id !== '' ? parseInt(section_id, 10) : null) 
       : existingDoc.section_id;
     const newSubsectionId = subsection_id !== undefined 
-      ? (subsection_id && subsection_id !== '' ? parseInt(subsection_id, 10) : null) 
+      ? (subsection_id !== null && subsection_id !== '' ? parseInt(subsection_id, 10) : null) 
       : existingDoc.subsection_id;
+    
+    console.log('🔍 UPDATE DOC - После преобразования:', { newSectionId, newSubsectionId });
     
     dbRun(
       `UPDATE documents 
@@ -2058,6 +2077,22 @@ async function syncFilesFromFTP() {
     } catch {}
   }
 }
+
+// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить документы и их разделы в БД
+app.get('/api/debug/documents-check', (req, res) => {
+  try {
+    const documents = dbAll("SELECT id, title, section_id, subsection_id FROM documents ORDER BY id");
+    const sections = dbAll("SELECT id, name FROM sections ORDER BY id");
+    
+    res.json({ 
+      documents: documents,
+      sections: sections,
+      count: documents.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить блоки в БД и создать documents
 app.get('/api/debug/blocks', (req, res) => {

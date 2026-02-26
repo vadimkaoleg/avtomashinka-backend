@@ -727,6 +727,16 @@ async function initDatabase() {
     }
   }
       
+  // МИГРАЦИЯ: Добавляем блок documents если его нет (для существующих БД)
+  const docsBlock = db.exec("SELECT id FROM blocks WHERE name = 'documents'");
+  if (docsBlock.length === 0 || docsBlock[0].values.length === 0) {
+    db.run(
+      "INSERT INTO blocks (name, title, subtitle, content, button_text, button_link, items, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ['documents', 'Сведения об образовательной организации', '', '', '', '', JSON.stringify({ legal_info: '' }), 1]
+    );
+    console.log('✅ Миграция: создан блок documents');
+  }
+      
   // Проверим все блоки
   const allBlocks = db.exec("SELECT id, name, is_visible FROM blocks");
   console.log('📦 Блоки в БД:', allBlocks);
@@ -750,7 +760,7 @@ async function initDatabase() {
     console.log('🔄 Обновлен пароль администратора: admin / admin123');
     console.log('🔄 Обновлен пароль администратора: admin / e67bBjNy');
   }
-
+    
   // Сохраняем БД
   saveDatabase();
     

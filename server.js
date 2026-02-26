@@ -703,7 +703,8 @@ async function initDatabase() {
     { name: 'advantages', title: 'Почему выбирают нас', subtitle: '', content: '', button_text: '', button_link: '', items: JSON.stringify([{ title: 'Опытные инструкторы', description: 'Стаж работы от 5 лет' },{ title: 'Современные авто', description: 'Новые и безопасные автомобили' },{ title: 'Гибкий график', description: 'Обучение в удобное время' }]), is_visible: 1 },
     { name: 'courses', title: 'Наши курсы', subtitle: '', content: '', button_text: '', button_link: '', items: JSON.stringify([{ title: 'Категория B', price: 'от 25 000 ₽', description: 'Обучение на легковой автомобиль' },{ title: 'Категория A', price: 'от 15 000 ₽', description: 'Обучение на мотоцикл' },{ title: 'Категория C', price: 'от 35 000 ₽', description: 'Обучение на грузовой автомобиль' }]), is_visible: 1 },
     { name: 'contact', title: 'Связаться с нами', subtitle: 'Оставьте заявку', content: 'Заполните форму и мы свяжемся с вами в ближайшее время', button_text: 'Отправить заявку', button_link: '', is_visible: 1 },
-    { name: 'footer', title: '', subtitle: '', content: '© 2024 Автошкола "Машинка". Все права защищены.', button_text: '', button_link: '', items: JSON.stringify([{ title: 'Телефон', value: '+7 (999) 123-45-67' },{ title: 'Email', value: 'info@mashinka.ru' },{ title: 'Адрес', value: 'г. Москва, ул. Примерная, д. 1' }]), is_visible: 1 }
+    { name: 'footer', title: '', subtitle: '', content: '© 2024 Автошкола "Машинка". Все права защищены.', button_text: '', button_link: '', items: JSON.stringify([{ title: 'Телефон', value: '+7 (999) 123-45-67' },{ title: 'Email', value: 'info@mashinka.ru' },{ title: 'Адрес', value: 'г. Москва, ул. Примерная, д. 1' }]), is_visible: 1 },
+    { name: 'documents', title: 'Сведения об образовательной организации', subtitle: '', content: '', button_text: '', button_link: '', items: JSON.stringify({ legal_info: '' }), is_visible: 1 }
   ];
 
   for (const block of defaultBlocks) {

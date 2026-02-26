@@ -2059,6 +2059,37 @@ async function syncFilesFromFTP() {
   }
 }
 
+// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить блоки в БД и создать documents
+app.get('/api/debug/blocks', (req, res) => {
+  try {
+    const allBlocks = dbAll("SELECT id, name, title, is_visible FROM blocks ORDER BY id");
+    const docsBlock = dbGet("SELECT * FROM blocks WHERE name = 'documents'");
+    
+    // Если блока documents нет - создаём
+    if (!docsBlock) {
+      db.run(
+        "INSERT INTO blocks (name, title, subtitle, content, button_text, button_link, items, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ['documents', 'Сведения об образовательной организации', '', '', '', '', JSON.stringify({ legal_info: '' }), 1]
+      );
+      saveDatabase();
+      console.log('✅ [DEBUG] Создан блок documents');
+      return res.json({ 
+        message: 'Блок documents отсутствовал, создан',
+        blocks: dbAll("SELECT id, name, title, is_visible FROM blocks ORDER BY id"),
+        documentsBlock: dbGet("SELECT * FROM blocks WHERE name = 'documents'")
+      });
+    }
+    
+    res.json({ 
+      message: 'Блок documents уже существует',
+      blocks: allBlocks,
+      documentsBlock: docsBlock
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить документы в БД
 app.get('/api/debug/documents', (req, res) => {
   try {
@@ -2281,6 +2312,17 @@ app.listen(PORT, async () => {
   
   // 🔄 Синхронизируем файлы с FTP при старте
   await syncFilesFromFTP();
+  
+  // 📋 МИГРАЦИЯ: Создаём блок documents после загрузки бэкапа
+  const docsBlock = dbGet("SELECT id FROM blocks WHERE name = 'documents'");
+  if (!docsBlock) {
+    db.run(
+      "INSERT INTO blocks (name, title, subtitle, content, button_text, button_link, items, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ['documents', 'Сведения об образовательной организации', '', '', '', '', JSON.stringify({ legal_info: '' }), 1]
+    );
+    saveDatabase();
+    console.log('✅ [МИГРАЦИЯ] Создан блок documents после загрузки бэкапа');
+  }
   
   console.log(`🚀 Сервер запущен на http://localhost:${PORT}
 📁 Файлы хранятся в: ${uploadsDir}

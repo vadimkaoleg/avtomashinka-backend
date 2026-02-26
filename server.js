@@ -710,9 +710,17 @@ async function initDatabase() {
       image TEXT,
       items TEXT,
       is_visible INTEGER DEFAULT 1,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      map_address TEXT
     )
   `);
+
+  // Миграция: добавляем колонку map_address если её нет
+  try {
+    db.run("ALTER TABLE blocks ADD COLUMN map_address TEXT");
+  } catch (e) {
+    // Колонка уже существует
+  }
 
   // Заполняем таблицу блоков начальными данными
   const defaultBlocks = [
@@ -754,7 +762,7 @@ async function initDatabase() {
     );
     console.log('✅ Миграция: создан блок documents');
   }
-      
+  
   // Проверим все блоки
   const allBlocks = db.exec("SELECT id, name, is_visible FROM blocks");
   console.log('📦 Блоки в БД:', allBlocks);
@@ -1558,14 +1566,15 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
 // Получить все блоки (публичный доступ)
 app.get('/api/blocks', async (req, res) => {
   try {
-    const blocks = dbAll("SELECT * FROM blocks WHERE is_visible = 1");
+    const blocks = dbAll("SELECT id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at, map_address FROM blocks WHERE is_visible = 1");
     const blocksData = blocks.map(block => {
       const parsedItems = block.items ? JSON.parse(block.items) : null;
       // Для блока documents извлекаем legal_info из items
       const result = {
         ...block,
         items: parsedItems,
-        is_visible: Boolean(block.is_visible)
+        is_visible: Boolean(block.is_visible),
+        map_address: block.map_address || ''
       };
       if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
         result.legal_info = parsedItems.legal_info || '';
@@ -1583,7 +1592,7 @@ app.get('/api/blocks', async (req, res) => {
 app.get('/api/blocks/:name', async (req, res) => {
   try {
     const { name } = req.params;
-    const block = dbGet("SELECT * FROM blocks WHERE name = ? AND is_visible = 1", [name]);
+    const block = dbGet("SELECT id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at, map_address FROM blocks WHERE name = ? AND is_visible = 1", [name]);
     if (!block) {
       return res.status(404).json({ error: 'Блок не найден' });
     }
@@ -1591,7 +1600,8 @@ app.get('/api/blocks/:name', async (req, res) => {
     const result = {
       ...block,
       items: parsedItems,
-      is_visible: Boolean(block.is_visible)
+      is_visible: Boolean(block.is_visible),
+      map_address: block.map_address || ''
     };
     // Для блока documents извлекаем legal_info из items
     if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
@@ -1607,13 +1617,14 @@ app.get('/api/blocks/:name', async (req, res) => {
 // Получить все блоки для админки
 app.get('/api/admin/blocks', authenticateToken, async (req, res) => {
   try {
-    const blocks = await dbAll("SELECT * FROM blocks ORDER BY id");
+    const blocks = await dbAll("SELECT id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at, map_address FROM blocks ORDER BY id");
     const blocksData = blocks.map(block => {
       const parsedItems = block.items ? JSON.parse(block.items) : null;
       const result = {
         ...block,
         items: parsedItems,
-        is_visible: Boolean(block.is_visible)
+        is_visible: Boolean(block.is_visible),
+        map_address: block.map_address || ''
       };
       // Для блока documents извлекаем legal_info из items
       if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
@@ -1632,7 +1643,7 @@ app.get('/api/admin/blocks', authenticateToken, async (req, res) => {
 app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, subtitle, content, button_text, button_link, image, items, is_visible, legal_info } = req.body;
+    const { title, subtitle, content, button_text, button_link, image, items, is_visible, legal_info, map_address } = req.body;
 
     const existingBlock = dbGet("SELECT * FROM blocks WHERE id = ?", [id]);
     if (!existingBlock) {
@@ -1660,7 +1671,7 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
 
     dbRun(
       `UPDATE blocks 
-       SET title = ?, subtitle = ?, content = ?, button_text = ?, button_link = ?, image = ?, items = ?, is_visible = ?, updated_at = CURRENT_TIMESTAMP
+       SET title = ?, subtitle = ?, content = ?, button_text = ?, button_link = ?, image = ?, items = ?, is_visible = ?, updated_at = CURRENT_TIMESTAMP, map_address = ?
        WHERE id = ?`,
       [
         title !== undefined ? title : existingBlock.title,
@@ -1671,6 +1682,7 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
         image !== undefined ? image : existingBlock.image,
         itemsJson,
         is_visible !== undefined ? (is_visible ? 1 : 0) : existingBlock.is_visible,
+        map_address !== undefined ? map_address : (existingBlock.map_address || ''),
         id
       ]
     );

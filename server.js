@@ -1091,7 +1091,10 @@ app.put('/api/admin/documents/reorder', authenticateToken, async (req, res) => {
     
     console.log(`✅ Обновлен порядок документов: ${order.join(', ')}`);
     
-    res.json({
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
+    res.json({ 
       success: true, 
       message: 'Порядок документов обновлен' 
     });
@@ -1110,7 +1113,7 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
     if (!files || files.length === 0) {
       return res.status(400).json({ error: 'Файл не загружен' });
     }
-
+    
     // Фильтруем только файлы (не другие поля)
     const fileList = files.filter(f => f.fieldName === 'file' || !f.fieldName);
     
@@ -1249,7 +1252,7 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при обновлении' });
   }
 });
-
+  
 // Удалить документ
 app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
   try {
@@ -1276,6 +1279,9 @@ app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
     
     console.log(`🗑️ Удален документ ID: ${id} (${doc.title})`);
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.json({ 
       success: true, 
       message: 'Документ удален' 
@@ -1360,7 +1366,7 @@ app.post('/api/admin/sections', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при создании' });
   }
 });
-  
+
 // Обновить раздел
 app.put('/api/admin/sections/:id', authenticateToken, async (req, res) => {
   try {
@@ -1393,7 +1399,7 @@ app.put('/api/admin/sections/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при обновлении' });
   }
 });
-
+  
 // Удалить раздел
 app.delete('/api/admin/sections/:id', authenticateToken, async (req, res) => {
   try {
@@ -2363,11 +2369,11 @@ app.use((err, req, res, next) => {
 
 // 🔐 FIXED: Запуск сервера с информацией о JWT
 app.listen(PORT, async () => {
-  // 📥 Пробуем загрузить бэкап с FTP
-  await loadBackupFromFTP();
-  
-  // 🔄 Синхронизируем файлы с FTP при старте
+  // 🔄 Сначала синхронизируем файлы с FTP (добавляем новые файлы)
   await syncFilesFromFTP();
+  
+  // 📥 Потом загружаем бэкап (восстановит документы с разделами, перезапишет данные из FTP)
+  await loadBackupFromFTP();
   
   // 📋 МИГРАЦИЯ: Создаём блок documents после загрузки бэкапа
   const docsBlock = dbGet("SELECT id FROM blocks WHERE name = 'documents'");

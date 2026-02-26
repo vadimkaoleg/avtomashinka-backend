@@ -367,6 +367,24 @@ function restoreFromBackup(backup) {
     console.log(`✅ Восстановлено ${backup.subsections.length} подразделов`);
   }
   
+  // 📄 Восстановление документов с section_id и subsection_id
+  if (backup.documents && backup.documents.length > 0) {
+    db.run("DELETE FROM documents");
+    for (const doc of backup.documents) {
+      db.run(
+        `INSERT INTO documents (id, title, description, filename, original_name, file_size, file_type, is_visible, sort_order, created_at, section_id, subsection_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          doc.id, doc.title, doc.description || '', doc.filename, doc.original_name || '',
+          doc.file_size || 0, doc.file_type || 'pdf', doc.is_visible ? 1 : 0,
+          doc.sort_order || 0, doc.created_at || new Date().toISOString(),
+          doc.section_id, doc.subsection_id
+        ]
+      );
+    }
+    console.log(`✅ Восстановлено ${backup.documents.length} документов (с разделами)`);
+  }
+      
   saveDatabase();
 }
 
@@ -1218,6 +1236,9 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
 
     console.log(`✅ Обновлен документ ID: ${id}, раздел: ${newSectionId || 'нет'}, подраздел: ${newSubsectionId || 'нет'}`);
     
+    // 📦 Сохраняем бэкап на FTP
+    await saveBackupToFTP();
+
     res.json({ 
       success: true, 
       message: 'Документ обновлен' 
@@ -1339,7 +1360,7 @@ app.post('/api/admin/sections', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при создании' });
   }
 });
-
+  
 // Обновить раздел
 app.put('/api/admin/sections/:id', authenticateToken, async (req, res) => {
   try {

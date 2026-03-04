@@ -1127,6 +1127,14 @@ async function initDatabase() {
   } catch (error) {
     console.warn('⚠️ Не удалось экспортировать данные:', error.message);
   }
+
+  // 🔄 Синхронизируем файлы с FTP (добавляем новые документы)
+  console.log('🔄 Запускаем синхронизацию файлов с FTP...');
+  try {
+    await syncFilesFromFTP();
+  } catch (error) {
+    console.warn('⚠️ Не удалось синхронизировать файлы:', error.message);
+  }
 }
 
 // Функция сохранения БД в файл
@@ -1284,7 +1292,7 @@ app.post('/api/login', async (req, res) => {
     console.log('✅ Успешный вход для пользователя:', username);
     
     res.json({ 
-      success: true, 
+      success: true,
       token,
       username: user.username,
       expiresIn: '24h'
@@ -2738,7 +2746,4 @@ app.listen(PORT, () => {
   console.log(`\n✅ Сервер запущен на порту ${PORT}`);
   console.log(`   http://localhost:${PORT}`);
   console.log(`   API: http://localhost:${PORT}/api\n`);
-  
-  // Запускаем синхронизацию файлов с FTP при старте
-  syncFilesFromFTP();
 });

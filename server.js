@@ -2563,3 +2563,13 @@ app.get('/api/debug/ftp-check', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// 🚀 ЗАПУСК СЕРВЕРА
+app.listen(PORT, () => {
+  console.log(`\n✅ Сервер запущен на порту ${PORT}`);
+  console.log(`   http://localhost:${PORT}`);
+  console.log(`   API: http://localhost:${PORT}/api\n`);
+  
+  // Запускаем синхронизацию файлов с FTP при старте
+  syncFilesFromFTP();
+});

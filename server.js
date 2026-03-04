@@ -580,7 +580,18 @@ const LOCAL_DATA_JSON_PATH = path.join(__dirname, DATA_JSON_FILE);
 // 📦 Создать JSON с данными для фронтенда
 function createSiteDataJSON() {
   const blocks = dbAll("SELECT * FROM blocks");
-  const documents = dbAll("SELECT * FROM documents WHERE filename NOT LIKE '%.json' AND filename NOT LIKE '%.sqlite'");
+  
+  // 🧹 Очищаем от дубликатов по filename перед созданием JSON
+  let documents = dbAll(`
+    SELECT d.*, s.name as section_name, sub.name as subsection_name 
+    FROM documents d
+    LEFT JOIN sections s ON d.section_id = s.id
+    LEFT JOIN subsections sub ON d.subsection_id = sub.id
+    WHERE d.filename NOT LIKE '%.json' AND d.filename NOT LIKE '%.sqlite'
+    GROUP BY d.filename
+    ORDER BY MIN(d.id) ASC, d.sort_order ASC, d.created_at DESC
+  `);
+
   const sections = dbAll("SELECT * FROM sections");
   const subsections = dbAll("SELECT * FROM subsections");
 
@@ -638,7 +649,7 @@ async function uploadDataJSONToFTP() {
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     await client.send('TYPE I');
-
+    
     try {
       await client.cd(FTP_CONFIG.remotePath);
     } catch {
@@ -1335,13 +1346,15 @@ app.get('/api/documents', async (req, res) => {
   try {
     // Получаем документы с информацией о разделах
     // Исключаем .json и .sqlite файлы
+    // Группируем по filename чтобы убрать дубликаты
     const documents = dbAll(`
       SELECT d.*, s.name as section_name, sub.name as subsection_name 
       FROM documents d
       LEFT JOIN sections s ON d.section_id = s.id
       LEFT JOIN subsections sub ON d.subsection_id = sub.id
       WHERE d.is_visible = 1 AND d.filename NOT LIKE '%.json' AND d.filename NOT LIKE '%.sqlite'
-      ORDER BY d.sort_order ASC, d.created_at DESC
+      GROUP BY d.filename
+      ORDER BY MIN(d.id) ASC, d.sort_order ASC, d.created_at DESC
     `);
     
     // Используем прямые ссылки на webnames (минуя Render.com)
@@ -1366,13 +1379,15 @@ app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   try {
   // Получаем документы с информацией о разделах
     // Исключаем .json и .sqlite файлы
+    // Группируем по filename чтобы убрать дубликаты
     const documents = dbAll(`
       SELECT d.*, s.name as section_name, sub.name as subsection_name 
       FROM documents d
       LEFT JOIN sections s ON d.section_id = s.id
       LEFT JOIN subsections sub ON d.subsection_id = sub.id
       WHERE d.filename NOT LIKE '%.json' AND d.filename NOT LIKE '%.sqlite'
-      ORDER BY d.sort_order ASC, d.created_at DESC
+      GROUP BY d.filename
+      ORDER BY MIN(d.id) ASC, d.sort_order ASC, d.created_at DESC
     `);
 
     // Логируем первый документ для отладки
@@ -1822,13 +1837,91 @@ app.put('/api/admin/subsections/:id', authenticateToken, async (req, res) => {
 
     console.log(`✅ Обновлен подраздел ID: ${id}`);
     
-    // 📦 Сохраняем бэкап на FTP
+// 📦 Сохраняем бэкап на FTP
     await syncDataToFTP();
 
     res.json({ success: true, message: 'Подраздел обновлен' });
   } catch (error) {
     console.error('❌ Ошибка обновления подраздела:', error);
     res.status(500).json({ error: 'Ошибка при обновлении' });
+  }
+});
+
+// 📥 СИНХРОНИЗАЦИЯ С FTP (для админки)
+app.post('/api/admin/sync-ftp', authenticateToken, async (req, res) => {
+  try {
+    console.log('🔄 Запрос синхронизации с FTP из админки...');
+    
+    if (!ftpEnabled) {
+      return res.json({ 
+        success: false, 
+        message: 'FTP отключен в конфигурации',
+        synced: false
+      });
+    }
+    
+    // Пытаемся загрузить БД с FTP
+    const dbRestored = await loadDatabaseFromFTP();
+    
+    if (dbRestored) {
+      console.log('✅ База данных загружена с FTP');
+      
+      // Перезагружаем данные в память
+      const SQL = await initSqlJs();
+      const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
+      db = new SQL.Database(fileBuffer);
+      
+      // 🧹 Очистка дубликатов
+      const dupCheck = db.exec("SELECT filename, COUNT(*) as cnt FROM documents GROUP BY filename HAVING cnt > 1");
+      if (dupCheck.length > 0 && dupCheck[0].values.length > 0) {
+        console.log(`🔧 Найдено дубликатов: ${dupCheck[0].values.length}, удаляем...`);
+        db.run(`
+          DELETE FROM documents 
+          WHERE id NOT IN (
+            SELECT MIN(id) FROM documents GROUP BY filename
+          )
+        `);
+        console.log('✅ Дубликаты удалены');
+      }
+      
+      // 🧹 Удаляем системные файлы
+      const sysFiles = db.exec("SELECT COUNT(*) FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
+      if (sysFiles.length > 0 && sysFiles[0].values[0][0] > 0) {
+        db.run("DELETE FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
+        console.log('✅ Системные файлы удалены');
+      }
+      
+      saveDatabase();
+      
+      // 📤 Обновляем JSON на FTP
+      await uploadDataJSONToFTP();
+      
+      const docCount = db.exec("SELECT COUNT(*) FROM documents");
+      const blockCount = db.exec("SELECT COUNT(*) FROM blocks");
+      
+      res.json({ 
+        success: true, 
+        message: 'Данные загружены с FTP',
+        synced: true,
+        stats: {
+          documents: docCount[0]?.values[0][0] || 0,
+          blocks: blockCount[0]?.values[0][0] || 0
+        }
+      });
+    } else {
+      res.json({ 
+        success: true, 
+        message: 'Нет новых данных на FTP, используются текущие',
+        synced: false
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка синхронизации с FTP:', error.message);
+    res.json({ 
+      success: false, 
+      message: 'Ошибка синхронизации: ' + error.message,
+      synced: false
+    });
   }
 });
 
@@ -1874,8 +1967,8 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
     // 📦 Синхронизируем данные на FTP (обновляем JSON)
     await syncDataToFTP();
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       filename: file.filename,
       url: `/uploads/${file.filename}`
     });

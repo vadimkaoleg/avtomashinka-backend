@@ -1816,13 +1816,16 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
       return res.status(400).json({ error: 'Файл не загружен' });
     }
     
-    // 📤 Загружаем изображение на FTP бэкап (не блокирует ответ)
+    // 📤 Загружаем изображение на FTP бэкап
     const ftpResult = await uploadToFTP(file.path, file.filename);
     if (ftpResult) {
       console.log(`💾 FTP бэкап изображения создан: ${file.filename}`);
     } else {
       console.warn(`⚠️ FTP бэкап изображения НЕ создан: ${file.filename}`);
     }
+
+    // 📦 Синхронизируем данные на FTP (обновляем JSON)
+    await syncDataToFTP();
 
     res.json({ 
       success: true, 
@@ -1937,19 +1940,22 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
 
     // Для блока documents сохраняем legal_info как часть items
     let itemsJson;
-    if (existingBlock.name === 'documents' && legal_info !== undefined) {
-      // Парсим существующие items или создаём новый объект с legal_info
-      let existingItems = [];
+    if (existingBlock.name === 'documents') {
+      // Парсим существующие items
+      let existingItems = {};
       try {
-        existingItems = existingBlock.items ? JSON.parse(existingBlock.items) : [];
+        existingItems = existingBlock.items ? JSON.parse(existingBlock.items) : {};
       } catch (e) {
-        existingItems = [];
+        existingItems = {};
       }
       
-      // Создаём объект с legal_info
-      const docsItems = { legal_info: legal_info };
+      // Обновляем legal_info если передан, иначе сохраняем существующее
+      const docsItems = {
+        ...existingItems,
+        legal_info: legal_info !== undefined ? legal_info : (existingItems.legal_info || '')
+      };
       itemsJson = JSON.stringify(docsItems);
-      console.log(`   📋 Сохранено legal_info для documents: ${legal_info ? legal_info.substring(0, 30) + '...' : 'пусто'}`);
+      console.log(`   📋 Сохранено legal_info для documents: ${docsItems.legal_info ? docsItems.legal_info.substring(0, 30) + '...' : 'пусто'}`);
     } else {
       itemsJson = items ? JSON.stringify(items) : existingBlock.items;
     }
@@ -2534,4 +2540,26 @@ app.get('/api/debug/ftp-check', async (req, res) => {
       }
       
       // Проверяем заголовок
-      const header = buff
+      const header = buffer.slice(0, 5).toString('ascii');
+      const isPdf = file.name.toLowerCase().endsWith('.pdf');
+      
+      if (isPdf && !header.startsWith('%PDF')) {
+        results.push({ name: file.name, status: 'corrupted', size: file.size, header });
+        continue;
+      }
+      
+      results.push({ name: file.name, status: 'ok', size: file.size, header });
+    }
+    
+    await client.close();
+    
+    res.json({
+      success: true,
+      total: fileList.length,
+      results
+    });
+  } catch (error) {
+    console.error('❌ Ошибка проверки FTP:', error);
+    res.status(500).json({ error: error.message });
+  }
+});

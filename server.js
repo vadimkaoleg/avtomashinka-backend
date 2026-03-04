@@ -331,20 +331,21 @@ function restoreFromBackup(backup) {
     for (const block of backup.blocks) {
       const itemsJson = block.items ? JSON.stringify(block.items) : null;
       db.run(
-        `INSERT INTO blocks (id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO blocks (id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at, map_address) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           block.id, block.name,
           block.title || '', block.subtitle || '', block.content || '',
           block.button_text || '', block.button_link || '', block.image || '',
           itemsJson, block.is_visible ? 1 : 0,
-          block.updated_at || new Date().toISOString()
+          block.updated_at || new Date().toISOString(),
+          block.map_address || ''
         ]
       );
     }
-    console.log(`✅ Восстановлено ${backup.blocks.length} блоков`);
+    console.log(`✅ Восстановлено ${backup.blocks.length} блоков (с map_address)`);
   }
-    
+      
   if (backup.sections && backup.sections.length > 0) {
     db.run("DELETE FROM sections");
     for (const section of backup.sections) {
@@ -355,7 +356,7 @@ function restoreFromBackup(backup) {
     }
     console.log(`✅ Восстановлено ${backup.sections.length} разделов`);
   }
-  
+      
   if (backup.subsections && backup.subsections.length > 0) {
     db.run("DELETE FROM subsections");
     for (const subsection of backup.subsections) {
@@ -366,7 +367,7 @@ function restoreFromBackup(backup) {
     }
     console.log(`✅ Восстановлено ${backup.subsections.length} подразделов`);
   }
-  
+    
   // 📄 Восстановление документов с section_id и subsection_id
   if (backup.documents && backup.documents.length > 0) {
     db.run("DELETE FROM documents");
@@ -1033,12 +1034,28 @@ async function initDatabase() {
   console.log(`🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
 
   // 📥 Загружаем БД SQLite с FTP при старте (если есть)
+  // ВАЖНО: Сравниваем даты, чтобы не перезаписать более новые локальные данные
   console.log('📥 Проверяем наличие БД на FTP...');
   try {
+    const localDbExists = fs.existsSync(LOCAL_DB_PATH);
+    const localStat = localDbExists ? fs.statSync(LOCAL_DB_PATH) : null;
+    
     const dbRestored = await loadDatabaseFromFTP();
-    if (dbRestored) {
+    if (dbRestored && localDbExists) {
+      const ftpStat = fs.statSync(LOCAL_DB_PATH);
+      // Если локальная БД новее, не перезаписываем
+      if (localStat.mtime > ftpStat.mtime) {
+        console.log('📋 Локальная БД новее, используем её');
+        // Перезагружаем локальную БД в память
+        const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
+        db = new SQL.Database(fileBuffer);
+      } else {
+        console.log('✅ База данных загружена с FTP (версия новее)');
+        const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
+        db = new SQL.Database(fileBuffer);
+      }
+    } else if (dbRestored) {
       console.log('✅ База данных загружена с FTP');
-      // Перезагружаем данные в память
       const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
       db = new SQL.Database(fileBuffer);
     }
@@ -1047,18 +1064,26 @@ async function initDatabase() {
   }
 
   // 📥 Загружаем бэкап с FTP при старте (если есть) - как резерв
+  // ВАЖНО: Не восстанавливаем из бэкапа если БД уже была загружена с FTP
+  // (бэкап может содержать устаревшие данные)
   console.log('📥 Проверяем наличие бэкапа на FTP...');
-  try {
-    const backupRestored = await loadBackupFromFTP();
-    if (backupRestored) {
-      console.log('✅ Данные восстановлены из бэкапа');
-    } else {
-      console.log('📋 Используем текущую базу данных');
+  const dbWasLoadedFromFTP = fs.existsSync(LOCAL_DB_PATH); // БД уже загружена
+  if (!dbWasLoadedFromFTP) {
+    // Только если БД не была загружена - пробуем бэкап
+    try {
+      const backupRestored = await loadBackupFromFTP();
+      if (backupRestored) {
+        console.log('✅ Данные восстановлены из бэкапа');
+      } else {
+        console.log('📋 Используем текущую базу данных');
+      }
+    } catch (error) {
+      console.warn('⚠️ Не удалось загрузить бэкап:', error.message);
     }
-  } catch (error) {
-    console.warn('⚠️ Не удалось загрузить бэкап:', error.message);
+  } else {
+    console.log('📋 БД уже загружена, пропускаем восстановление из бэкапа');
   }
-
+    
   // 📤 Выгружаем JSON с данными на FTP для фронтенда
   console.log('📤 Экспортируем данные для фронтенда...');
   try {
@@ -1222,8 +1247,8 @@ app.post('/api/login', async (req, res) => {
     
     console.log('✅ Успешный вход для пользователя:', username);
     
-    res.json({
-      success: true,
+    res.json({ 
+      success: true, 
       token,
       username: user.username,
       expiresIn: '24h'
@@ -1234,7 +1259,7 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
-  
+
 // 🔐 FIXED: Проверка токена
 app.get('/api/verify-token', authenticateToken, (req, res) => {
   res.json({
@@ -1979,9 +2004,16 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
     );
 
     console.log(`✅ Обновлен блок ID: ${id} (${existingBlock.name})`);
+    console.log(`   📝 content: "${content ? content.substring(0, 50) + '...' : '(пусто)'}"`);
 
     // 📦 Сохраняем бэкап на FTP
-    await syncDataToFTP();
+    console.log('   📤 Синхронизация с FTP...');
+    try {
+      await syncDataToFTP();
+      console.log('   ✅ Синхронизация с FTP завершена');
+    } catch (ftpError) {
+      console.error('   ❌ Ошибка синхронизации с FTP:', ftpError.message);
+    }
 
     res.json({ success: true, message: 'Блок обновлен' });
   } catch (error) {
@@ -1989,7 +2021,7 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при обновлении' });
   }
 });
-  
+
 // 📥 РАБОТА С ФАЙЛАМИ
 
 // 📁 Настраиваем статику для папки uploads (для корректной отдачи бинарных файлов)

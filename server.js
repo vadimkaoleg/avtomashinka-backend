@@ -1034,30 +1034,21 @@ async function initDatabase() {
   console.log(`🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
 
   // 📥 Загружаем БД SQLite с FTP при старте (если есть)
-  // ВАЖНО: Сравниваем даты, чтобы не перезаписать более новые локальные данные
+  // ВАЖНО: Всегда пытаемся загрузить с FTP если там есть данные
   console.log('📥 Проверяем наличие БД на FTP...');
   try {
-    const localDbExists = fs.existsSync(LOCAL_DB_PATH);
-    const localStat = localDbExists ? fs.statSync(LOCAL_DB_PATH) : null;
-    
     const dbRestored = await loadDatabaseFromFTP();
-    if (dbRestored && localDbExists) {
-      const ftpStat = fs.statSync(LOCAL_DB_PATH);
-      // Если локальная БД новее, не перезаписываем
-      if (localStat.mtime > ftpStat.mtime) {
-        console.log('📋 Локальная БД новее, используем её');
-        // Перезагружаем локальную БД в память
-        const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
-        db = new SQL.Database(fileBuffer);
-      } else {
-        console.log('✅ База данных загружена с FTP (версия новее)');
-        const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
-        db = new SQL.Database(fileBuffer);
-      }
-    } else if (dbRestored) {
+    if (dbRestored) {
       console.log('✅ База данных загружена с FTP');
+      // Перезагружаем данные в память
       const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
       db = new SQL.Database(fileBuffer);
+      
+      // Проверим что данные загрузились
+      const blocks = db.exec("SELECT COUNT(*) FROM blocks");
+      console.log(`   📊 Загружено блоков: ${blocks[0]?.values[0][0] || 0}`);
+    } else {
+      console.log('📋 БД на FTP не найдена или не требует обновления, используем локальную');
     }
   } catch (error) {
     console.warn('⚠️ Не удалось загрузить БД с FTP:', error.message);

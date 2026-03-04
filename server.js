@@ -2493,7 +2493,8 @@ async function syncFilesFromFTP() {
     
     await client.cd(FTP_CONFIG.remotePath);
     const fileList = await client.list();
-    console.log(`📂 Файлов на FTP: ${fileList.length}`);
+    console.log(`📂 Всего файлов на FTP: ${fileList.length}`);
+    console.log(`   📄 Список: ${fileList.map(f => f.name).join(', ')}`);
     
     // Пропускаем служебные файлы
     const actualFiles = fileList.filter(f => 
@@ -2502,7 +2503,7 @@ async function syncFilesFromFTP() {
       !f.name.endsWith('.json') &&
       !f.name.endsWith('.sqlite')
     );
-    console.log(`   📂 Файлов для синхронизации: ${actualFiles.length}`);
+    console.log(`   📂 Файлов для синхронизации (без .json и .sqlite): ${actualFiles.length}`);
     
     if (actualFiles.length === 0) {
       console.log('   ⚠️ Нет файлов для загрузки');
@@ -2514,12 +2515,15 @@ async function syncFilesFromFTP() {
     const existingFilenames = new Set(existingDocs.map(d => d.filename));
     
     console.log(`   📋 Уже в БД: ${existingFilenames.size} файлов`);
+    console.log(`   📋 Имена в БД: ${Array.from(existingFilenames).join(', ')}`);
     
     let downloaded = 0;
     let added = 0;
     let skipped = 0;
     
     for (const file of actualFiles) {
+      console.log(`   🔍 Проверяем: ${file.name} (в БД? ${existingFilenames.has(file.name)})`);
+      
       // Пропускаем если документ уже есть в БД
       if (existingFilenames.has(file.name)) {
         skipped++;
@@ -2542,7 +2546,7 @@ async function syncFilesFromFTP() {
         [title, '', file.name, file.name, file.size, 'pdf', 1]
       );
       
-      console.log(`   ✅ "${title}"`);
+      console.log(`   ✅ Добавлен: "${title}"`);
       added++;
     }
     
@@ -2551,7 +2555,7 @@ async function syncFilesFromFTP() {
       saveDatabase();
     }
     
-    console.log(`✅ Синхронизация завершена: ${downloaded} скачано, ${added} добавлено, ${skipped} пропущено`);
+    console.log(`✅ Синхронизация: ${downloaded} скачано, ${added} добавлено, ${skipped} пропущено`);
     
     // 📤 Обновляем site-data.json
     console.log('📤 Обновляем site-data.json...');

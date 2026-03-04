@@ -2544,6 +2544,11 @@ async function syncFilesFromFTP() {
     }
     
     console.log(`✅ Синхронизация завершена: ${downloaded} файлов скачано, ${added} добавлено в БД`);
+    
+    // 📤 Обновляем site-data.json после синхронизации файлов
+    console.log('📤 Обновляем site-data.json...');
+    await uploadDataJSONToFTP();
+    
     return downloaded + added;
   } catch (error) {
     console.error('❌ Ошибка синхронизации при старте:', error.message);

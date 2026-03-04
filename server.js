@@ -1855,7 +1855,7 @@ app.put('/api/admin/subsections/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// 📥 СИНХРОНИЗАЦИЯ С FTP (для админки)
+// 📥 СИНХРОНИЗАЦИЯ С FTP (для админки) - добавляет новые файлы, не удаляя существующие
 app.post('/api/admin/sync-ftp', authenticateToken, async (req, res) => {
   try {
     console.log('🔄 Запрос синхронизации с FTP из админки...');
@@ -1868,64 +1868,24 @@ app.post('/api/admin/sync-ftp', authenticateToken, async (req, res) => {
       });
     }
     
-    // Пытаемся загрузить БД с FTP
-    const dbRestored = await loadDatabaseFromFTP();
+    // Просто вызываем функцию синхронизации файлов (добавляет новые, не удаляя)
+    const addedCount = await syncFilesFromFTP();
     
-    if (dbRestored) {
-      console.log('✅ База данных загружена с FTP');
-      
-      // Перезагружаем данные в память
-      const SQL = await initSqlJs();
-      const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
-      db = new SQL.Database(fileBuffer);
-      
-      // 🧹 Очистка дубликатов
-      const dupCheck = db.exec("SELECT filename, COUNT(*) as cnt FROM documents GROUP BY filename HAVING cnt > 1");
-      if (dupCheck.length > 0 && dupCheck[0].values.length > 0) {
-        console.log(`🔧 Найдено дубликатов: ${dupCheck[0].values.length}, удаляем...`);
-        db.run(`
-          DELETE FROM documents 
-          WHERE id NOT IN (
-            SELECT MIN(id) FROM documents GROUP BY filename
-          )
-        `);
-        console.log('✅ Дубликаты удалены');
+    const docCount = dbGet("SELECT COUNT(*) as count FROM documents");
+    const visibleCount = dbGet("SELECT COUNT(*) as count FROM documents WHERE is_visible = 1");
+    
+    res.json({ 
+      success: true,
+      message: `Синхронизация завершена: ${addedCount} новых файлов добавлено`,
+      synced: true,
+      stats: {
+        documents: docCount?.count || 0,
+        visible: visibleCount?.count || 0
       }
-      
-      // 🧹 Удаляем системные файлы
-      const sysFiles = db.exec("SELECT COUNT(*) FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
-      if (sysFiles.length > 0 && sysFiles[0].values[0][0] > 0) {
-        db.run("DELETE FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
-        console.log('✅ Системные файлы удалены');
-      }
-      
-      saveDatabase();
-      
-      // 📤 Обновляем JSON на FTP
-      await uploadDataJSONToFTP();
-      
-      const docCount = db.exec("SELECT COUNT(*) FROM documents");
-      const blockCount = db.exec("SELECT COUNT(*) FROM blocks");
-      
-      res.json({ 
-        success: true, 
-        message: 'Данные загружены с FTP',
-        synced: true,
-        stats: {
-          documents: docCount[0]?.values[0][0] || 0,
-          blocks: blockCount[0]?.values[0][0] || 0
-        }
-      });
-    } else {
-      res.json({ 
-        success: true, 
-        message: 'Нет новых данных на FTP, используются текущие',
-        synced: false
-      });
-    }
+    });
   } catch (error) {
     console.error('❌ Ошибка синхронизации с FTP:', error.message);
-    res.json({ 
+    res.json({
       success: false, 
       message: 'Ошибка синхронизации: ' + error.message,
       synced: false

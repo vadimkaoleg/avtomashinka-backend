@@ -2481,9 +2481,9 @@ app.get('/uploads/:filename', async (req, res) => {
   }
 });
 
-// 🔄 Автоматическая синхронизация файлов с FTP при старте
+// 🔄 Синхронизация файлов с FTP (добавляет новые, не удаляя существующие)
 async function syncFilesFromFTP() {
-  console.log('🔄 Начинаем синхронизацию файлов с FTP...');
+  console.log('🔄 Синхронизация файлов с FTP...');
   
   const client = new FTPClient();
   
@@ -2491,32 +2491,41 @@ async function syncFilesFromFTP() {
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     
-    // Читаем список файлов из папки uploads/named (основные файлы)
     await client.cd(FTP_CONFIG.remotePath);
     const fileList = await client.list();
     console.log(`📂 Файлов на FTP: ${fileList.length}`);
     
-    // Используем имена файлов напрямую (без UUID)
-    // Файлы уже имеют нормальные имена на FTP
-    console.log(`   📄 Файлы на FTP: ${fileList.map(f => f.name).join(', ')}`);
-    
-    // Пропускаем файл named (служебный)
-    const actualFiles = fileList.filter(f => f.name !== 'named' && !f.name.startsWith('.'));
-    console.log(`   📂 Файлов для загрузки: ${actualFiles.length}`);
+    // Пропускаем служебные файлы
+    const actualFiles = fileList.filter(f => 
+      f.name !== 'named' && 
+      !f.name.startsWith('.') &&
+      !f.name.endsWith('.json') &&
+      !f.name.endsWith('.sqlite')
+    );
+    console.log(`   📂 Файлов для синхронизации: ${actualFiles.length}`);
     
     if (actualFiles.length === 0) {
-      console.log('   ⚠️ Нет файлов для загрузки (только служебные)');
+      console.log('   ⚠️ Нет файлов для загрузки');
       return;
     }
     
+    // Получаем текущие filename из БД
+    const existingDocs = dbAll("SELECT filename FROM documents");
+    const existingFilenames = new Set(existingDocs.map(d => d.filename));
+    
+    console.log(`   📋 Уже в БД: ${existingFilenames.size} файлов`);
+    
     let downloaded = 0;
     let added = 0;
-    
-    // Очищаем таблицу документов и добавляем заново с FTP
-    db.run('DELETE FROM documents');
-    console.log('🗑️ Очищена таблица документов');
+    let skipped = 0;
     
     for (const file of actualFiles) {
+      // Пропускаем если документ уже есть в БД
+      if (existingFilenames.has(file.name)) {
+        skipped++;
+        continue;
+      }
+      
       const localPath = path.join(uploadsDir, file.name);
       
       // Скачиваем если нет локально
@@ -2526,26 +2535,25 @@ async function syncFilesFromFTP() {
         downloaded++;
       }
       
-      // Используем имя файла как есть (без UUID)
-      const originalName = file.name;
-      
-      // Title - это имя файла без расширения
-      const title = originalName.replace(/\.[^/.]+$/, '') || 'Документ';
-      
-      console.log(`   → "${title}" (${file.name})`);
+      const title = file.name.replace(/\.[^/.]+$/, '') || 'Документ';
       
       db.run(
         `INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [title, '', file.name, originalName, file.size, 'pdf', 1]
+        [title, '', file.name, file.name, file.size, 'pdf', 1]
       );
-      saveDatabase();
-      console.log(`📝 Добавлен в БД: ${file.name} (${title})`);
+      
+      console.log(`   ✅ "${title}"`);
       added++;
     }
     
-    console.log(`✅ Синхронизация завершена: ${downloaded} файлов скачано, ${added} добавлено в БД`);
+    // Сохраняем БД только один раз после всех вставок
+    if (added > 0) {
+      saveDatabase();
+    }
     
-    // 📤 Обновляем site-data.json после синхронизации файлов
+    console.log(`✅ Синхронизация завершена: ${downloaded} скачано, ${added} добавлено, ${skipped} пропущено`);
+    
+    // 📤 Обновляем site-data.json
     console.log('📤 Обновляем site-data.json...');
     try {
       await uploadDataJSONToFTP();
@@ -2556,7 +2564,7 @@ async function syncFilesFromFTP() {
     
     return downloaded + added;
   } catch (error) {
-    console.error('❌ Ошибка синхронизации при старте:', error.message);
+    console.error('❌ Ошибка синхронизации:', error.message);
     return 0;
   } finally {
     try {

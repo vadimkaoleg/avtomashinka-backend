@@ -369,9 +369,16 @@ function restoreFromBackup(backup) {
   }
     
   // 📄 Восстановление документов с section_id и subsection_id
+  // ВАЖНО: Пропускаем .sqlite и .json файлы
   if (backup.documents && backup.documents.length > 0) {
     db.run("DELETE FROM documents");
+    let restoredCount = 0;
     for (const doc of backup.documents) {
+      // Пропускаем системные файлы
+      if (doc.filename && (doc.filename.endsWith('.sqlite') || doc.filename.endsWith('.json'))) {
+        console.log(`   ⏭️ Пропущен системный файл: ${doc.filename}`);
+        continue;
+      }
       db.run(
         `INSERT INTO documents (id, title, description, filename, original_name, file_size, file_type, is_visible, sort_order, created_at, section_id, subsection_id) 
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -382,8 +389,9 @@ function restoreFromBackup(backup) {
           doc.section_id, doc.subsection_id
         ]
       );
+      restoredCount++;
     }
-    console.log(`✅ Восстановлено ${backup.documents.length} документов (с разделами)`);
+    console.log(`✅ Восстановлено ${restoredCount} документов (с разделами)`);
   }
       
   saveDatabase();
@@ -1047,6 +1055,29 @@ async function initDatabase() {
       // Проверим что данные загрузились
       const blocks = db.exec("SELECT COUNT(*) FROM blocks");
       console.log(`   📊 Загружено блоков: ${blocks[0]?.values[0][0] || 0}`);
+      
+      // 🧹 Очистка дубликатов и системных файлов после загрузки с FTP
+      const dupCheck = db.exec("SELECT filename, COUNT(*) as cnt FROM documents GROUP BY filename HAVING cnt > 1");
+      if (dupCheck.length > 0 && dupCheck[0].values.length > 0) {
+        console.log(`🔧 Найдено дубликатов: ${dupCheck[0].values.length}, удаляем...`);
+        // Удаляем дубликаты, оставляя только первый
+        db.run(`
+          DELETE FROM documents 
+          WHERE id NOT IN (
+            SELECT MIN(id) FROM documents GROUP BY filename
+          )
+        `);
+        console.log('✅ Дубликаты удалены');
+        saveDatabase();
+      }
+      
+      // 🧹 Удаляем системные файлы из documents
+      const sysFiles = db.exec("SELECT COUNT(*) FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
+      if (sysFiles.length > 0 && sysFiles[0].values[0][0] > 0) {
+        db.run("DELETE FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
+        console.log('✅ Системные файлы удалены из documents');
+        saveDatabase();
+      }
     } else {
       console.log('📋 БД на FTP не найдена или не требует обновления, используем локальную');
     }
@@ -1303,13 +1334,13 @@ const FILES_BASE_URL = 'https://avmashinka.ru/uploads/named';
 app.get('/api/documents', async (req, res) => {
   try {
     // Получаем документы с информацией о разделах
-    // Исключаем .json файлы (backup.json)
+    // Исключаем .json и .sqlite файлы
     const documents = dbAll(`
       SELECT d.*, s.name as section_name, sub.name as subsection_name 
       FROM documents d
       LEFT JOIN sections s ON d.section_id = s.id
       LEFT JOIN subsections sub ON d.subsection_id = sub.id
-      WHERE d.is_visible = 1 AND d.filename NOT LIKE '%.json'
+      WHERE d.is_visible = 1 AND d.filename NOT LIKE '%.json' AND d.filename NOT LIKE '%.sqlite'
       ORDER BY d.sort_order ASC, d.created_at DESC
     `);
     
@@ -1333,14 +1364,14 @@ app.get('/api/documents', async (req, res) => {
 // 🔐 FIXED: Получить документы для админки (требуется токен)
 app.get('/api/admin/documents', authenticateToken, async (req, res) => {
   try {
-    // Получаем документы с информацией о разделах
-    // Исключаем .json файлы (backup.json)
+  // Получаем документы с информацией о разделах
+    // Исключаем .json и .sqlite файлы
     const documents = dbAll(`
       SELECT d.*, s.name as section_name, sub.name as subsection_name 
       FROM documents d
       LEFT JOIN sections s ON d.section_id = s.id
       LEFT JOIN subsections sub ON d.subsection_id = sub.id
-      WHERE d.filename NOT LIKE '%.json'
+      WHERE d.filename NOT LIKE '%.json' AND d.filename NOT LIKE '%.sqlite'
       ORDER BY d.sort_order ASC, d.created_at DESC
     `);
 

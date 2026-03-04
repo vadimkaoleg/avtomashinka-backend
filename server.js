@@ -577,6 +577,9 @@ async function loadDatabaseFromFTP() {
 const DATA_JSON_FILE = 'site-data.json';
 const LOCAL_DATA_JSON_PATH = path.join(__dirname, DATA_JSON_FILE);
 
+// 📁 Прямой URL для файлов на webnames
+const FILES_BASE_URL = 'https://avmashinka.ru/uploads/named';
+
 // 📦 Создать JSON с данными для фронтенда
 function createSiteDataJSON() {
   const blocks = dbAll("SELECT * FROM blocks");
@@ -1337,9 +1340,6 @@ app.put('/api/admin/password', authenticateToken, async (req, res) => {
 });
 
 // 📁 УПРАВЛЕНИЕ ДОКУМЕНТАМИ
-
-// Прямой URL для файлов на webnames (обход проблем с Render.com)
-const FILES_BASE_URL = 'https://avmashinka.ru/uploads/named';
 
 // Получить все документы (публичный доступ) - БЕЗ аутентификации
 app.get('/api/documents', async (req, res) => {
@@ -2547,7 +2547,12 @@ async function syncFilesFromFTP() {
     
     // 📤 Обновляем site-data.json после синхронизации файлов
     console.log('📤 Обновляем site-data.json...');
-    await uploadDataJSONToFTP();
+    try {
+      await uploadDataJSONToFTP();
+      console.log('✅ site-data.json обновлен на FTP');
+    } catch (jsonError) {
+      console.error('❌ Ошибка обновления site-data.json:', jsonError.message);
+    }
     
     return downloaded + added;
   } catch (error) {
@@ -2652,8 +2657,8 @@ app.get('/api/sync-ftp', async (req, res) => {
     
     await client.close();
     
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       files: results,
       total: fileList.length
     });

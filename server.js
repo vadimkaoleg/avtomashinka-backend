@@ -441,6 +441,240 @@ async function saveBackupToFTP() {
   return true;
 }
 
+// ============================================
+// НОВЫЕ ФУНКЦИИ: Сохранение и загрузка SQLite БД на FTP
+// ============================================
+
+const DB_FILE = 'database.sqlite';
+const LOCAL_DB_PATH = path.join(__dirname, DB_FILE);
+
+// 📤 Сохранить базу данных SQLite на FTP
+async function saveDatabaseToFTP() {
+  if (!fs.existsSync(LOCAL_DB_PATH)) {
+    console.log('⏭️ Локальная БД не найдена, пропускаем сохранение');
+    return false;
+  }
+  
+  const localStat = fs.statSync(LOCAL_DB_PATH);
+  console.log(`💾 Сохранение БД на FTP: ${localStat.size} байт...`);
+
+  if (!ftpEnabled) {
+    console.log('⏭️ FTP отключен, пропускаем сохранение БД');
+    return false;
+  }
+
+  const client = new FTPClient();
+  try {
+    client.ftp.verbose = false;
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.send('TYPE I');
+    
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+    } catch {
+      try {
+        await client.mkdir(FTP_CONFIG.remotePath);
+        await client.cd(FTP_CONFIG.remotePath);
+      } catch (mkdirErr) {
+        console.warn('⚠️ Не удалось создать папку на FTP:', mkdirErr.message);
+      }
+    }
+
+    await client.uploadFrom(LOCAL_DB_PATH, DB_FILE);
+    console.log('💾 База данных сохранена на FTP');
+    return true;
+  } catch (error) {
+    console.error('❌ Ошибка сохранения БД на FTP:', error.message);
+    return false;
+  } finally {
+    try { await client.close(); } catch {}
+  }
+}
+
+// 📥 Загрузить базу данных SQLite с FTP
+async function loadDatabaseFromFTP() {
+  if (!ftpEnabled) {
+    console.log('⏭️ FTP отключен, пропускаем загрузку БД');
+    return false;
+  }
+
+  const client = new FTPClient();
+  const tempPath = path.join(__dirname, 'database_ftp_temp.sqlite');
+
+  try {
+    client.ftp.verbose = false;
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.send('TYPE I');
+
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+    } catch {
+      console.log('⚠️ Папка на FTP не найдена');
+      return false;
+    }
+
+    const fileList = await client.list();
+    const dbFile = fileList.find(f => f.name === DB_FILE);
+
+    if (!dbFile) {
+      console.log('📋 База данных на FTP не найдена');
+      return false;
+    }
+
+    console.log(`📥 Найдена БД на FTP: ${dbFile.size} байт`);
+
+    // Скачиваем во временный файл
+    await client.downloadTo(tempPath, DB_FILE);
+
+    if (!fs.existsSync(tempPath)) {
+      console.error('❌ Не удалось скачать БД с FTP');
+      return false;
+    }
+
+    const ftpStat = fs.statSync(tempPath);
+    const localStat = fs.existsSync(LOCAL_DB_PATH) ? fs.statSync(LOCAL_DB_PATH) : null;
+
+    // Если FTP версия новее (по размеру) или локальной нет — используем её
+    // Также если размеры совпадают, но хотим синхронизировать
+    if (!localStat || ftpStat.size > localStat.size || ftpStat.size === localStat.size) {
+      // Удаляем старую и перемещаем новую
+      if (fs.existsSync(LOCAL_DB_PATH)) {
+        fs.unlinkSync(LOCAL_DB_PATH);
+      }
+      fs.copyFileSync(tempPath, LOCAL_DB_PATH);
+      fs.unlinkSync(tempPath);
+      console.log('💾 База данных загружена с FTP');
+      return true;
+    }
+
+    console.log('📋 Локальная БД актуальна, используем её');
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    return false;
+  } catch (error) {
+    console.warn('⚠️ Не удалось загрузить БД с FTP:', error.message);
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    return false;
+  } finally {
+    try { await client.close(); } catch {}
+  }
+}
+
+// ============================================
+// НОВЫЕ ФУНКЦИИ: Экспорт JSON для фронтенда
+// ============================================
+
+const DATA_JSON_FILE = 'site-data.json';
+const LOCAL_DATA_JSON_PATH = path.join(__dirname, DATA_JSON_FILE);
+
+// 📦 Создать JSON с данными для фронтенда
+function createSiteDataJSON() {
+  const blocks = dbAll("SELECT * FROM blocks");
+  const documents = dbAll("SELECT * FROM documents WHERE filename NOT LIKE '%.json'");
+  const sections = dbAll("SELECT * FROM sections");
+  const subsections = dbAll("SELECT * FROM subsections");
+
+  // Парсим JSON-поля в blocks
+  const parsedBlocks = blocks.map(block => ({
+    ...block,
+    items: block.items ? JSON.parse(block.items) : null,
+    is_visible: Boolean(block.is_visible)
+  }));
+
+  // Добавляем прямые ссылки на файлы
+  const docsWithUrls = documents.map(doc => ({
+    ...doc,
+    downloadUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
+    fileUrl: `${FILES_BASE_URL}/${encodeURIComponent(doc.filename)}`,
+    is_visible: Boolean(doc.is_visible)
+  }));
+
+  // Группируем подразделы по разделам
+  const sectionsWithSubsections = sections.map(section => ({
+    ...section,
+    subsections: subsections
+      .filter(sub => sub.section_id === section.id)
+      .map(sub => ({ ...sub, is_visible: Boolean(sub.is_visible) })),
+    is_visible: Boolean(section.is_visible)
+  }));
+
+  return {
+    version: '1.0',
+    timestamp: new Date().toISOString(),
+    generated: new Date().toISOString(),
+    blocks: parsedBlocks,
+    documents: docsWithUrls,
+    sections: sectionsWithSubsections
+  };
+}
+
+// 📤 Загрузить JSON с данными на FTP
+async function uploadDataJSONToFTP() {
+  const data = createSiteDataJSON();
+  const jsonContent = JSON.stringify(data, null, 2);
+
+  // Сохраняем локально
+  fs.writeFileSync(LOCAL_DATA_JSON_PATH, jsonContent, 'utf8');
+  console.log(`💾 JSON данных сохранен локально: ${jsonContent.length} байт`);
+
+  if (!ftpEnabled) {
+    console.log('⏭️ FTP отключен, пропускаем загрузку JSON');
+    return false;
+  }
+
+  const client = new FTPClient();
+  try {
+    client.ftp.verbose = false;
+    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
+    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
+    await client.send('TYPE I');
+
+    try {
+      await client.cd(FTP_CONFIG.remotePath);
+    } catch {
+      try {
+        await client.mkdir(FTP_CONFIG.remotePath);
+        await client.cd(FTP_CONFIG.remotePath);
+      } catch (mkdirErr) {
+        console.warn('⚠️ Не удалось создать папку на FTP:', mkdirErr.message);
+      }
+    }
+
+    await client.uploadFrom(LOCAL_DATA_JSON_PATH, DATA_JSON_FILE);
+    console.log('📤 JSON данных загружен на FTP');
+    return true;
+  } catch (error) {
+    console.error('❌ Ошибка загрузки JSON на FTP:', error.message);
+    return false;
+  } finally {
+    try { await client.close(); } catch {}
+  }
+}
+
+// 📥 Экспортировать и загрузить данные (обёртка для вызова после изменений)
+async function syncDataToFTP() {
+  // Сохраняем БД на FTP
+  await saveDatabaseToFTP();
+  // Загружаем JSON на FTP
+  await uploadDataJSONToFTP();
+}
+
+// 📊 Получить ВСЕ данные одним запросом (для фронтенда с fallback на FTP)
+app.get('/api/alldata', async (req, res) => {
+  try {
+    const data = createSiteDataJSON();
+    res.json(data);
+  } catch (error) {
+    console.error('❌ Ошибка получения всех данных:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// ============================================
+// Конец новых функций
+// ============================================
+
 // Загрузить бэкап при старте (локальный + FTP, выбираем свежий)
 async function loadBackupFromFTP() {
   const client = new FTPClient();
@@ -722,6 +956,11 @@ async function initDatabase() {
     // Колонка уже существует
   }
 
+  // Миграция: добавляем колонку legal_info если её нет (в items хранится)
+  // Для блока documents legal_info хранится как JSON в поле items
+  // Пример: {"legal_info": "текст юридической информации"}
+  console.log('✅ Миграция legal_info: хранится в items как JSON');
+
   // Заполняем таблицу блоков начальными данными
   const defaultBlocks = [
     { name: 'hero', title: 'Мы не просто автошкола.', subtitle: 'Мы — Академия будущих водителей!', content: 'Автошкола "Машинка" предлагает качественное обучение вождению с опытными инструкторами. Получите права быстро и надежно!', button_text: 'Записаться сейчас', button_link: 'contact', is_visible: 1 },
@@ -792,6 +1031,41 @@ async function initDatabase() {
     
   console.log('✅ База данных инициализирована');
   console.log(`🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
+
+  // 📥 Загружаем БД SQLite с FTP при старте (если есть)
+  console.log('📥 Проверяем наличие БД на FTP...');
+  try {
+    const dbRestored = await loadDatabaseFromFTP();
+    if (dbRestored) {
+      console.log('✅ База данных загружена с FTP');
+      // Перезагружаем данные в память
+      const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
+      db = new SQL.Database(fileBuffer);
+    }
+  } catch (error) {
+    console.warn('⚠️ Не удалось загрузить БД с FTP:', error.message);
+  }
+
+  // 📥 Загружаем бэкап с FTP при старте (если есть) - как резерв
+  console.log('📥 Проверяем наличие бэкапа на FTP...');
+  try {
+    const backupRestored = await loadBackupFromFTP();
+    if (backupRestored) {
+      console.log('✅ Данные восстановлены из бэкапа');
+    } else {
+      console.log('📋 Используем текущую базу данных');
+    }
+  } catch (error) {
+    console.warn('⚠️ Не удалось загрузить бэкап:', error.message);
+  }
+
+  // 📤 Выгружаем JSON с данными на FTP для фронтенда
+  console.log('📤 Экспортируем данные для фронтенда...');
+  try {
+    await uploadDataJSONToFTP();
+  } catch (error) {
+    console.warn('⚠️ Не удалось экспортировать данные:', error.message);
+  }
 }
 
 // Функция сохранения БД в файл
@@ -960,7 +1234,7 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
-
+  
 // 🔐 FIXED: Проверка токена
 app.get('/api/verify-token', authenticateToken, (req, res) => {
   res.json({
@@ -1100,7 +1374,7 @@ app.put('/api/admin/documents/reorder', authenticateToken, async (req, res) => {
     console.log(`✅ Обновлен порядок документов: ${order.join(', ')}`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.json({ 
       success: true, 
@@ -1180,7 +1454,7 @@ app.post('/api/admin/documents', authenticateToken, upload.any(), async (req, re
     }
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.status(201).json({
       success: true, 
@@ -1248,7 +1522,7 @@ app.put('/api/admin/documents/:id', authenticateToken, async (req, res) => {
     console.log(`✅ Обновлен документ ID: ${id}, раздел: ${newSectionId || 'нет'}, подраздел: ${newSubsectionId || 'нет'}`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.json({ 
       success: true, 
@@ -1288,7 +1562,7 @@ app.delete('/api/admin/documents/:id', authenticateToken, async (req, res) => {
     console.log(`🗑️ Удален документ ID: ${id} (${doc.title})`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.json({ 
       success: true, 
@@ -1362,7 +1636,7 @@ app.post('/api/admin/sections', authenticateToken, async (req, res) => {
     console.log(`✅ Создан раздел: ${name} (ID: ${result.lastID})`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.status(201).json({
       success: true, 
@@ -1399,7 +1673,7 @@ app.put('/api/admin/sections/:id', authenticateToken, async (req, res) => {
     console.log(`✅ Обновлен раздел ID: ${id}`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.json({ success: true, message: 'Раздел обновлен' });
   } catch (error) {
@@ -1426,7 +1700,7 @@ app.delete('/api/admin/sections/:id', authenticateToken, async (req, res) => {
     console.log(`🗑️ Удален раздел ID: ${id}`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.json({ success: true, message: 'Раздел удален' });
   } catch (error) {
@@ -1464,7 +1738,7 @@ app.post('/api/admin/subsections', authenticateToken, async (req, res) => {
     console.log(`✅ Создан подраздел: ${name} (ID: ${result.lastID})`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.status(201).json({
       success: true, 
@@ -1502,7 +1776,7 @@ app.put('/api/admin/subsections/:id', authenticateToken, async (req, res) => {
     console.log(`✅ Обновлен подраздел ID: ${id}`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.json({ success: true, message: 'Подраздел обновлен' });
   } catch (error) {
@@ -1525,7 +1799,7 @@ app.delete('/api/admin/subsections/:id', authenticateToken, async (req, res) => 
     console.log(`🗑️ Удален подраздел ID: ${id}`);
     
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.json({ success: true, message: 'Подраздел удален' });
   } catch (error) {
@@ -1562,6 +1836,17 @@ app.post('/api/admin/blocks/upload-image', authenticateToken, upload.single('ima
 });
 
 // 📦 УПРАВЛЕНИЕ БЛОКАМИ
+
+// 📊 Получить ВСЕ данные одним запросом (для фронтенда)
+app.get('/api/alldata', async (req, res) => {
+  try {
+    const data = createSiteDataJSON();
+    res.json(data);
+  } catch (error) {
+    console.error('❌ Ошибка получения всех данных:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
 
 // Получить все блоки (публичный доступ)
 app.get('/api/blocks', async (req, res) => {
@@ -1690,7 +1975,7 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
     console.log(`✅ Обновлен блок ID: ${id} (${existingBlock.name})`);
 
     // 📦 Сохраняем бэкап на FTP
-    await saveBackupToFTP();
+    await syncDataToFTP();
 
     res.json({ success: true, message: 'Блок обновлен' });
   } catch (error) {
@@ -1698,7 +1983,7 @@ app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка при обновлении' });
   }
 });
-
+  
 // 📥 РАБОТА С ФАЙЛАМИ
 
 // 📁 Настраиваем статику для папки uploads (для корректной отдачи бинарных файлов)
@@ -2384,7 +2669,17 @@ app.listen(PORT, async () => {
   // 🔄 Сначала синхронизируем файлы с FTP (добавляем новые файлы)
   await syncFilesFromFTP();
   
-  // 📥 Потом загружаем бэкап (восстановит документы с разделами, перезапишет данные из FTP)
+  // 📥 Загружаем БД SQLite с FTP (основной источник данных)
+  console.log('📥 Проверяем БД на FTP...');
+  const dbRestored = await loadDatabaseFromFTP();
+  if (dbRestored) {
+    console.log('✅ База данных загружена с FTP');
+    // Перезагружаем данные в память
+    const fileBuffer = fs.readFileSync(LOCAL_DB_PATH);
+    db = new SQL.Database(fileBuffer);
+  }
+  
+  // 📥 Также загружаем бэкап как резерв
   await loadBackupFromFTP();
   
   // 📋 МИГРАЦИЯ: Создаём блок documents после загрузки бэкапа
@@ -2398,6 +2693,10 @@ app.listen(PORT, async () => {
     console.log('✅ [МИГРАЦИЯ] Создан блок documents после загрузки бэкапа');
   }
   
+  // 📤 Экспортируем данные для фронтенда на FTP
+  console.log('📤 Экспортируем данные для фронтенда...');
+  await uploadDataJSONToFTP();
+  
   console.log(`🚀 Сервер запущен на http://localhost:${PORT}
 📁 Файлы хранятся в: ${uploadsDir}
 📊 API доступен по: http://localhost:${PORT}/api
@@ -2405,6 +2704,7 @@ app.listen(PORT, async () => {
 ⚡ Примеры запросов:
   GET  http://localhost:${PORT}/ - Информация о сервере
   GET  http://localhost:${PORT}/api/documents - Публичные документы
+  GET  http://localhost:${PORT}/api/alldata - Все данные для фронтенда
   GET  http://localhost:${PORT}/api/health - Проверка здоровья
   POST http://localhost:${PORT}/api/login - Вход в систему
   `);

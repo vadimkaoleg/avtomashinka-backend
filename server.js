@@ -1134,14 +1134,6 @@ async function initDatabase() {
     console.warn('⚠️ Не удалось экспортировать данные:', error.message);
   }
 
-  // 🔄 Синхронизируем файлы с FTP (добавляем новые документы)
-  console.log('🔄 Запускаем синхронизацию файлов с FTP...');
-  try {
-    await syncFilesFromFTP();
-  } catch (error) {
-    console.warn('⚠️ Не удалось синхронизировать файлы:', error.message);
-  }
-  
   console.log('✅ Инициализация БД завершена');
 }
 
@@ -2574,6 +2566,15 @@ async function startServer() {
   
   // Загружаем бэкап если есть
   await loadBackupFromFTP();
+  
+  // 🔄 Синхронизируем файлы с FTP ПОСЛЕ загрузки БД (добавляет новые документы)
+  console.log('🔄 Синхронизация файлов с FTP...');
+  try {
+    const addedCount = await syncFilesFromFTP();
+    console.log(`✅ Синхронизация завершена: ${addedCount} новых файлов`);
+  } catch (error) {
+    console.warn('⚠️ Ошибка синхронизации файлов:', error.message);
+  }
   
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Сервер запущен на порту ${PORT}`);

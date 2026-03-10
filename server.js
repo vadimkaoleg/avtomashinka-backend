@@ -584,6 +584,13 @@ const FILES_BASE_URL = 'https://avmashinka.ru/uploads/named';
 function createSiteDataJSON() {
   const blocks = dbAll("SELECT * FROM blocks");
   
+  // 🔍 Логируем content блока documents
+  const docsBlock = blocks.find(b => b.name === 'documents');
+  if (docsBlock) {
+    console.log(`📦 createSiteDataJSON - documents block content: "${docsBlock.content ? docsBlock.content.substring(0, 100) + '...' : '(пусто)'}"`);
+    console.log(`   📦 content length: ${docsBlock.content?.length || 0}, newlines: ${(docsBlock.content || '').split('\n').length - 1}`);
+  }
+  
   // 🧹 Получаем все документы с актуальными данными о разделах
   // Используем MAX(id) чтобы получить самую свежую запись для каждого filename
   let documents = dbAll(`

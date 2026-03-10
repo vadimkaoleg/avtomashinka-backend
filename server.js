@@ -2566,6 +2566,9 @@ async function syncFilesFromFTP() {
 
 // Запуск сервера
 async function startServer() {
+  // Инициализируем базу данных
+  await initDatabase();
+  
   // Загружаем базу данных с FTP если доступна
   await loadDatabaseFromFTP();
   

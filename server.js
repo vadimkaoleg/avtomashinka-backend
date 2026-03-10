@@ -1062,7 +1062,7 @@ async function initDatabase() {
   console.log(`🔐 JWT Secret: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
 
   // 📥 Загружаем БД SQLite с FTP при старте (если есть)
-  // ВАЖНО: Всегда пытаемся загрузить с FTP если там есть данные
+  // ВАЖНО: Render перезапускается, поэтому FTP - источник истины
   console.log('📥 Проверяем наличие БД на FTP...');
   try {
     const dbRestored = await loadDatabaseFromFTP();
@@ -1074,58 +1074,32 @@ async function initDatabase() {
       
       // Проверим что данные загрузились
       const blocks = db.exec("SELECT COUNT(*) FROM blocks");
-      console.log(`   📊 Загружено блоков: ${blocks[0]?.values[0][0] || 0}`);
-      
-      // 🧹 Очистка дубликатов и системных файлов после загрузки с FTP
-      const dupCheck = db.exec("SELECT filename, COUNT(*) as cnt FROM documents GROUP BY filename HAVING cnt > 1");
-      if (dupCheck.length > 0 && dupCheck[0].values.length > 0) {
-        console.log(`🔧 Найдено дубликатов: ${dupCheck[0].values.length}, удаляем...`);
-        // Удаляем дубликаты, оставляя только первый
-        db.run(`
-          DELETE FROM documents 
-          WHERE id NOT IN (
-            SELECT MIN(id) FROM documents GROUP BY filename
-          )
-        `);
-        console.log('✅ Дубликаты удалены');
-        saveDatabase();
-      }
-      
-      // 🧹 Удаляем системные файлы из documents
-      const sysFiles = db.exec("SELECT COUNT(*) FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
-      if (sysFiles.length > 0 && sysFiles[0].values[0][0] > 0) {
-        db.run("DELETE FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
-        console.log('✅ Системные файлы удалены из documents');
-        saveDatabase();
-      }
+      const docs = db.exec("SELECT COUNT(*) FROM documents");
+      console.log(`   📊 Загружено блоков: ${blocks[0]?.values[0][0] || 0}, документов: ${docs[0]?.values[0][0] || 0}`);
     } else {
-      console.log('📋 БД на FTP не найдена или не требует обновления, используем локальную');
+      console.log('📋 БД на FTP не найдена, используем локальную');
     }
   } catch (error) {
     console.warn('⚠️ Не удалось загрузить БД с FTP:', error.message);
   }
 
-  // 📥 Загружаем бэкап с FTP при старте (если есть) - как резерв
-  // ВАЖНО: Не восстанавливаем из бэкапа если БД уже была загружена с FTP
-  // (бэкап может содержать устаревшие данные)
-  console.log('📥 Проверяем наличие бэкапа на FTP...');
-  const dbWasLoadedFromFTP = fs.existsSync(LOCAL_DB_PATH); // БД уже загружена
-  if (!dbWasLoadedFromFTP) {
-    // Только если БД не была загружена - пробуем бэкап
-    try {
-      const backupRestored = await loadBackupFromFTP();
-      if (backupRestored) {
-        console.log('✅ Данные восстановлены из бэкапа');
-      } else {
-        console.log('📋 Используем текущую базу данных');
-      }
-    } catch (error) {
-      console.warn('⚠️ Не удалось загрузить бэкап:', error.message);
-    }
-  } else {
-    console.log('📋 БД уже загружена, пропускаем восстановление из бэкапа');
+  // 🧹 Очистка дубликатов и системных файлов
+  const dupCheck = db.exec("SELECT filename, COUNT(*) as cnt FROM documents GROUP BY filename HAVING cnt > 1");
+  if (dupCheck.length > 0 && dupCheck[0].values.length > 0) {
+    console.log(`🔧 Найдено дубликатов: ${dupCheck[0].values.length}, удаляем...`);
+    db.run(`DELETE FROM documents WHERE id NOT IN (SELECT MIN(id) FROM documents GROUP BY filename)`);
+    console.log('✅ Дубликаты удалены');
+    saveDatabase();
   }
-    
+  
+  // 🧹 Удаляем системные файлы из documents
+  const sysFiles = db.exec("SELECT COUNT(*) FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
+  if (sysFiles.length > 0 && sysFiles[0].values[0][0] > 0) {
+    db.run("DELETE FROM documents WHERE filename LIKE '%.sqlite' OR filename LIKE '%.json'");
+    console.log('✅ Системные файлы удалены из documents');
+    saveDatabase();
+  }
+
   // 📤 Выгружаем JSON с данными на FTP для фронтенда
   console.log('📤 Экспортируем данные для фронтенда...');
   try {
@@ -2561,20 +2535,21 @@ async function syncFilesFromFTP() {
 
 // Запуск сервера
 async function startServer() {
-  // Инициализируем базу данных
+  // Инициализируем базу данных (загружает с FTP если есть)
   await initDatabase();
   
-  // Загружаем базу данных с FTP если доступна
-  await loadDatabaseFromFTP();
-  
-  // Загружаем бэкап если есть
-  await loadBackupFromFTP();
-  
-  // 🔄 Синхронизируем файлы с FTP ПОСЛЕ загрузки БД (добавляет новые документы)
+  // 🔄 Синхронизируем файлы с FTP (добавляет новые документы)
   console.log('🔄 Синхронизация файлов с FTP...');
   try {
     const addedCount = await syncFilesFromFTP();
     console.log(`✅ Синхронизация завершена: ${addedCount} новых файлов`);
+    
+    // Если добавились файлы - сохраняем БД на FTP
+    if (addedCount > 0) {
+      console.log('📤 Сохраняем обновлённую БД на FTP...');
+      await saveDatabaseToFTP();
+      await uploadDataJSONToFTP();
+    }
   } catch (error) {
     console.warn('⚠️ Ошибка синхронизации файлов:', error.message);
   }

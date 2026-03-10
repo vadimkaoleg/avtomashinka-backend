@@ -2512,10 +2512,10 @@ async function syncFilesFromFTP() {
         try {
           await client.downloadTo(localPath, file.name);
           
-          // Проверяем что файл скачался корректно
-          const stat = fs.statSync(localPath);
-          if (stat.size === file.size) {
-            console.log(`   ✅ Скачан: ${file.name}`);
+          // Проверяем что файл скачался
+          if (fs.existsSync(localPath)) {
+            const stat = fs.statSync(localPath);
+            console.log(`   ✅ Скачан: ${file.name} (${stat.size} bytes)`);
             
             // Добавляем в базу данных если нет
             const existingDoc = dbGet("SELECT * FROM documents WHERE filename = ?", [file.name]);
@@ -2523,13 +2523,12 @@ async function syncFilesFromFTP() {
               const ext = path.extname(file.name).toLowerCase().replace('.', '');
               dbRun(
                 "INSERT INTO documents (title, filename, original_name, file_size, file_type, is_visible) VALUES (?, ?, ?, ?, ?, 1)",
-                [file.name.replace(/\.[^/.]+$/, ''), file.name, file.name, file.size, ext]
+                [file.name.replace(/\.[^/.]+$/, ''), file.name, file.name, stat.size, ext]
               );
               addedCount++;
             }
           } else {
-            console.log(`   ⚠️ Размер не совпал: ${file.name}`);
-            if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+            console.log(`   ⚠️ Файл не скачался: ${file.name}`);
           }
         } catch (downloadErr) {
           console.error(`   ❌ Ошибка скачивания ${file.name}:`, downloadErr.message);

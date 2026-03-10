@@ -2481,6 +2481,10 @@ async function syncFilesFromFTP() {
     await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
     await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
     
+    // 🔧 ВАЖНО: Переключаем в бинарный режим для корректной передачи файлов
+    await client.send('TYPE I');
+    console.log('   ✅ Бинарный режим включен');
+    
     await client.cd(FTP_CONFIG.remotePath);
     const fileList = await client.list();
     console.log(`📂 Всего файлов на FTP: ${fileList.length}`);

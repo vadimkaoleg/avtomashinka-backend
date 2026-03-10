@@ -1142,12 +1142,7 @@ async function initDatabase() {
     console.warn('⚠️ Не удалось синхронизировать файлы:', error.message);
   }
   
-  // 🚀 Запускаем сервер ПОСЛЕ завершения инициализации
-  app.listen(PORT, () => {
-    console.log(`\n✅ Сервер запущен на порту ${PORT}`);
-    console.log(`   http://localhost:${PORT}`);
-    console.log(`   API: http://localhost:${PORT}/api\n`);
-  });
+  console.log('✅ Инициализация БД завершена');
 }
 
 // Функция сохранения БД в файл
@@ -1184,16 +1179,6 @@ function dbRun(sql, params = []) {
   saveDatabase();
   return { lastID: db.exec("SELECT last_insert_rowid()")[0].values[0][0] };
 }
-
-// 🚀 Запускаем инициализацию БД и сервер
-initDatabase()
-  .then(() => {
-    console.log('✅ Инициализация завершена, сервер готов к работе');
-  })
-  .catch(err => {
-    console.error('❌ Критическая ошибка инициализации:', err);
-    process.exit(1);
-  });
 
 // 🔐 FIXED: Middleware аутентификации с исправленной проверкой
 const authenticateToken = (req, res, next) => {

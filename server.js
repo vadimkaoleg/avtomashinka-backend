@@ -584,16 +584,22 @@ const FILES_BASE_URL = 'https://avmashinka.ru/uploads/named';
 function createSiteDataJSON() {
   const blocks = dbAll("SELECT * FROM blocks");
   
-  // 🧹 Очищаем от дубликатов по filename перед созданием JSON
+  // 🧹 Получаем все документы с актуальными данными о разделах
+  // Используем MAX(id) чтобы получить самую свежую запись для каждого filename
   let documents = dbAll(`
     SELECT d.*, s.name as section_name, sub.name as subsection_name 
     FROM documents d
     LEFT JOIN sections s ON d.section_id = s.id
     LEFT JOIN subsections sub ON d.subsection_id = sub.id
     WHERE d.filename NOT LIKE '%.json' AND d.filename NOT LIKE '%.sqlite'
-    GROUP BY d.filename
-    ORDER BY MIN(d.id) ASC, d.sort_order ASC, d.created_at DESC
+    AND d.id = (
+      SELECT MAX(d2.id) FROM documents d2 
+      WHERE d2.filename = d.filename
+    )
+    ORDER BY d.sort_order ASC, d.created_at DESC
   `);
+
+  console.log(`📦 JSON: получено ${documents.length} документов с актуальными section_id`);
 
   const sections = dbAll("SELECT * FROM sections");
   const subsections = dbAll("SELECT * FROM subsections");
@@ -663,7 +669,7 @@ async function uploadDataJSONToFTP() {
         console.warn('⚠️ Не удалось создать папку на FTP:', mkdirErr.message);
       }
     }
-
+    
     await client.uploadFrom(LOCAL_DATA_JSON_PATH, DATA_JSON_FILE);
     console.log('📤 JSON данных загружен на FTP');
     return true;
@@ -1135,6 +1141,13 @@ async function initDatabase() {
   } catch (error) {
     console.warn('⚠️ Не удалось синхронизировать файлы:', error.message);
   }
+  
+  // 🚀 Запускаем сервер ПОСЛЕ завершения инициализации
+  app.listen(PORT, () => {
+    console.log(`\n✅ Сервер запущен на порту ${PORT}`);
+    console.log(`   http://localhost:${PORT}`);
+    console.log(`   API: http://localhost:${PORT}/api\n`);
+  });
 }
 
 // Функция сохранения БД в файл
@@ -1172,7 +1185,15 @@ function dbRun(sql, params = []) {
   return { lastID: db.exec("SELECT last_insert_rowid()")[0].values[0][0] };
 }
 
-initDatabase().catch(console.error);
+// 🚀 Запускаем инициализацию БД и сервер
+initDatabase()
+  .then(() => {
+    console.log('✅ Инициализация завершена, сервер готов к работе');
+  })
+  .catch(err => {
+    console.error('❌ Критическая ошибка инициализации:', err);
+    process.exit(1);
+  });
 
 // 🔐 FIXED: Middleware аутентификации с исправленной проверкой
 const authenticateToken = (req, res, next) => {
@@ -1965,17 +1986,12 @@ app.get('/api/blocks', async (req, res) => {
     const blocks = dbAll("SELECT id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at, map_address FROM blocks WHERE is_visible = 1");
     const blocksData = blocks.map(block => {
       const parsedItems = block.items ? JSON.parse(block.items) : null;
-      // Для блока documents извлекаем legal_info из items
-      const result = {
+      return {
         ...block,
         items: parsedItems,
         is_visible: Boolean(block.is_visible),
         map_address: block.map_address || ''
       };
-      if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
-        result.legal_info = parsedItems.legal_info || '';
-      }
-      return result;
     });
     res.json(blocksData);
   } catch (error) {
@@ -1999,10 +2015,6 @@ app.get('/api/blocks/:name', async (req, res) => {
       is_visible: Boolean(block.is_visible),
       map_address: block.map_address || ''
     };
-    // Для блока documents извлекаем legal_info из items
-    if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
-      result.legal_info = parsedItems.legal_info || '';
-    }
     res.json(result);
   } catch (error) {
     console.error('❌ Ошибка получения блока:', error);
@@ -2016,17 +2028,12 @@ app.get('/api/admin/blocks', authenticateToken, async (req, res) => {
     const blocks = await dbAll("SELECT id, name, title, subtitle, content, button_text, button_link, image, items, is_visible, updated_at, map_address FROM blocks ORDER BY id");
     const blocksData = blocks.map(block => {
       const parsedItems = block.items ? JSON.parse(block.items) : null;
-      const result = {
+      return {
         ...block,
         items: parsedItems,
         is_visible: Boolean(block.is_visible),
         map_address: block.map_address || ''
       };
-      // Для блока documents извлекаем legal_info из items
-      if (block.name === 'documents' && parsedItems && typeof parsedItems === 'object') {
-        result.legal_info = parsedItems.legal_info || '';
-      }
-      return result;
     });
     res.json(blocksData);
   } catch (error) {
@@ -2039,34 +2046,15 @@ app.get('/api/admin/blocks', authenticateToken, async (req, res) => {
 app.put('/api/admin/blocks/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, subtitle, content, button_text, button_link, image, items, is_visible, legal_info, map_address } = req.body;
+    const { title, subtitle, content, button_text, button_link, image, items, is_visible, map_address } = req.body;
 
     const existingBlock = dbGet("SELECT * FROM blocks WHERE id = ?", [id]);
     if (!existingBlock) {
       return res.status(404).json({ error: 'Блок не найден' });
     }
 
-    // Для блока documents сохраняем legal_info как часть items
-    let itemsJson;
-    if (existingBlock.name === 'documents') {
-      // Парсим существующие items
-      let existingItems = {};
-      try {
-        existingItems = existingBlock.items ? JSON.parse(existingBlock.items) : {};
-      } catch (e) {
-        existingItems = {};
-      }
-      
-      // Обновляем legal_info если передан, иначе сохраняем существующее
-      const docsItems = {
-        ...existingItems,
-        legal_info: legal_info !== undefined ? legal_info : (existingItems.legal_info || '')
-      };
-      itemsJson = JSON.stringify(docsItems);
-      console.log(`   📋 Сохранено legal_info для documents: ${docsItems.legal_info ? docsItems.legal_info.substring(0, 30) + '...' : 'пусто'}`);
-    } else {
-      itemsJson = items ? JSON.stringify(items) : existingBlock.items;
-    }
+    // Для всех блоков используем items как есть
+    const itemsJson = items ? JSON.stringify(items) : existingBlock.items;
 
     dbRun(
       `UPDATE blocks 
@@ -2408,6 +2396,63 @@ app.get('/', (req, res) => {
   });
 });
 
+// 🔄 МИГРАЦИЯ: Перенос legal_info из items в content для documents
+app.post('/api/admin/migrate-legal-info', authenticateToken, async (req, res) => {
+  try {
+    console.log('🔄 Миграция legal_info → content...');
+    
+    const documentsBlock = dbGet("SELECT * FROM blocks WHERE name = 'documents'");
+    
+    if (!documentsBlock) {
+      return res.status(404).json({ error: 'Блок documents не найден' });
+    }
+    
+    // Парсим items
+    let items = {};
+    try {
+      items = documentsBlock.items ? JSON.parse(documentsBlock.items) : {};
+    } catch (e) {
+      items = {};
+    }
+    
+    // Если есть legal_info в items и content пустой - переносим
+    if (items.legal_info && !documentsBlock.content) {
+      dbRun(
+        "UPDATE blocks SET content = ?, items = NULL WHERE name = 'documents'",
+        [items.legal_info]
+      );
+      
+      console.log(`✅ Миграция завершена: legal_info перенесен в content`);
+      console.log(`   Текст: "${items.legal_info.substring(0, 50)}..."`);
+      
+      await syncDataToFTP();
+      
+      res.json({ 
+        success: true, 
+        message: 'Миграция завершена',
+        migrated: true,
+        content: items.legal_info
+      });
+    } else if (documentsBlock.content) {
+      res.json({ 
+        success: true, 
+        message: 'Content уже заполнен, миграция не требуется',
+        migrated: false,
+        content: documentsBlock.content
+      });
+    } else {
+      res.json({ 
+        success: true, 
+        message: 'Legal_info не найден в items',
+        migrated: false
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка миграции:', error);
+    res.status(500).json({ error: 'Ошибка миграции' });
+  }
+});
+
 // 🔐 FIXED: Проверка здоровья сервера
 app.get('/api/health', (req, res) => {
   res.json({
@@ -2474,236 +2519,4 @@ async function syncFilesFromFTP() {
     console.log(`   📂 Файлов для синхронизации (без .json и .sqlite): ${actualFiles.length}`);
     
     if (actualFiles.length === 0) {
-      console.log('   ⚠️ Нет файлов для загрузки');
-      return;
-    }
-    
-    // Получаем текущие filename из БД
-    const existingDocs = dbAll("SELECT filename FROM documents");
-    const existingFilenames = new Set(existingDocs.map(d => d.filename));
-    
-    console.log(`   📋 Уже в БД: ${existingFilenames.size} файлов`);
-    console.log(`   📋 Имена в БД: ${Array.from(existingFilenames).join(', ')}`);
-    
-    let downloaded = 0;
-    let added = 0;
-    let skipped = 0;
-    
-    for (const file of actualFiles) {
-      console.log(`   🔍 Проверяем: ${file.name} (в БД? ${existingFilenames.has(file.name)})`);
-      
-      // Пропускаем если документ уже есть в БД
-      if (existingFilenames.has(file.name)) {
-        skipped++;
-        continue;
-      }
-      
-      const localPath = path.join(uploadsDir, file.name);
-      
-      // Скачиваем если нет локально
-      if (!fs.existsSync(localPath)) {
-        console.log(`📥 Скачиваю: ${file.name}`);
-        await client.downloadTo(localPath, file.name);
-        downloaded++;
-      }
-      
-      const title = file.name.replace(/\.[^/.]+$/, '') || 'Документ';
-      
-      db.run(
-        `INSERT INTO documents (title, description, filename, original_name, file_size, file_type, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [title, '', file.name, file.name, file.size, 'pdf', 1]
-      );
-      
-      console.log(`   ✅ Добавлен: "${title}"`);
-      added++;
-    }
-    
-    // Сохраняем БД только один раз после всех вставок
-    if (added > 0) {
-      saveDatabase();
-    }
-    
-    console.log(`✅ Синхронизация: ${downloaded} скачано, ${added} добавлено, ${skipped} пропущено`);
-    
-    // 📤 Обновляем site-data.json
-    console.log('📤 Обновляем site-data.json...');
-    try {
-      await uploadDataJSONToFTP();
-      console.log('✅ site-data.json обновлен на FTP');
-    } catch (jsonError) {
-      console.error('❌ Ошибка обновления site-data.json:', jsonError.message);
-    }
-    
-    return downloaded + added;
-  } catch (error) {
-    console.error('❌ Ошибка синхронизации:', error.message);
-    return 0;
-  } finally {
-    try {
-      await client.close();
-    } catch {}
-  }
-}
-
-// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить документы и их разделы в БД
-app.get('/api/debug/documents-check', (req, res) => {
-  try {
-    const documents = dbAll("SELECT id, title, section_id, subsection_id FROM documents ORDER BY id");
-    const sections = dbAll("SELECT id, name FROM sections ORDER BY id");
-    
-    res.json({ 
-      documents: documents,
-      sections: sections,
-      count: documents.length
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить блоки в БД и создать documents
-app.get('/api/debug/blocks', (req, res) => {
-  try {
-    const allBlocks = dbAll("SELECT id, name, title, is_visible FROM blocks ORDER BY id");
-    const docsBlock = dbGet("SELECT * FROM blocks WHERE name = 'documents'");
-    
-    // Если блока documents нет - создаём
-    if (!docsBlock) {
-      db.run(
-        "INSERT INTO blocks (name, title, subtitle, content, button_text, button_link, items, is_visible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        ['documents', 'Сведения об образовательной организации', '', '', '', '', JSON.stringify({ legal_info: '' }), 1]
-      );
-      saveDatabase();
-      console.log('✅ [DEBUG] Создан блок documents');
-      return res.json({ 
-        message: 'Блок documents отсутствовал, создан',
-        blocks: dbAll("SELECT id, name, title, is_visible FROM blocks ORDER BY id"),
-        documentsBlock: dbGet("SELECT * FROM blocks WHERE name = 'documents'")
-      });
-    }
-    
-    res.json({ 
-      message: 'Блок documents уже существует',
-      blocks: allBlocks,
-      documentsBlock: docsBlock
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить документы в БД
-app.get('/api/debug/documents', (req, res) => {
-  try {
-    const all = dbAll("SELECT id, title, filename, is_visible, file_type FROM documents");
-    const visible = dbAll("SELECT id, title, filename, is_visible FROM documents WHERE is_visible = 1");
-    
-    res.json({ 
-      total: all.length,
-      visible: visible.length,
-      documents: all
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Синхронизация всех файлов с FTP
-app.get('/api/sync-ftp', async (req, res) => {
-  try {
-    const client = new FTPClient();
-    
-    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
-    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    await client.cd(FTP_CONFIG.remotePath);
-    
-    const fileList = await client.list();
-    console.log(`📂 Файлов на FTP: ${fileList.length}`);
-    
-    const results = [];
-    for (const file of fileList) {
-      if (file.name === 'named' || file.name.startsWith('.')) continue;
-      
-      const localPath = path.join(uploadsDir, file.name);
-      
-      if (!fs.existsSync(localPath)) {
-        console.log(`📥 Скачиваю: ${file.name}`);
-        await client.downloadTo(localPath, file.name);
-        results.push({ name: file.name, status: 'downloaded' });
-      } else {
-        results.push({ name: file.name, status: 'exists' });
-      }
-    }
-    
-    await client.close();
-    
-    res.json({
-      success: true,
-      files: results,
-      total: fileList.length
-    });
-  } catch (error) {
-    console.error('❌ Ошибка синхронизации:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🔧 ТЕСТОВЫЙ ЭНДПОИНТ: Проверить целостность файлов на FTP
-app.get('/api/debug/ftp-check', async (req, res) => {
-  const client = new FTPClient();
-  
-  try {
-    await client.connect(FTP_CONFIG.host, FTP_CONFIG.port);
-    await client.login(FTP_CONFIG.user, FTP_CONFIG.password);
-    await client.send('TYPE I'); // Бинарный режим
-    await client.cd(FTP_CONFIG.remotePath);
-    
-    const fileList = await client.list();
-    console.log(`📂 Файлов на FTP: ${fileList.length}`);
-    
-    const results = [];
-    
-    for (const file of fileList) {
-      if (file.name === 'named' || file.name.startsWith('.')) continue;
-      
-      console.log(`🔍 Проверяем файл на FTP: ${file.name}`);
-      
-      // Скачиваем в буфер для проверки
-      const buffer = await client.downloadToBuffer(file.name);
-      
-      if (!buffer || buffer.length === 0) {
-        results.push({ name: file.name, status: 'empty', size: file.size });
-        continue;
-      }
-      
-      // Проверяем заголовок
-      const header = buffer.slice(0, 5).toString('ascii');
-      const isPdf = file.name.toLowerCase().endsWith('.pdf');
-      
-      if (isPdf && !header.startsWith('%PDF')) {
-        results.push({ name: file.name, status: 'corrupted', size: file.size, header });
-        continue;
-      }
-      
-      results.push({ name: file.name, status: 'ok', size: file.size, header });
-    }
-    
-    await client.close();
-    
-    res.json({
-      success: true,
-      total: fileList.length,
-      results
-    });
-  } catch (error) {
-    console.error('❌ Ошибка проверки FTP:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 🚀 ЗАПУСК СЕРВЕРА
-app.listen(PORT, () => {
-  console.log(`\n✅ Сервер запущен на порту ${PORT}`);
-  console.log(`   http://localhost:${PORT}`);
-  console.log(`   API: http://localhost:${PORT}/api\n`);
-});
+   

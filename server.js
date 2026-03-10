@@ -2519,4 +2519,80 @@ async function syncFilesFromFTP() {
     console.log(`   📂 Файлов для синхронизации (без .json и .sqlite): ${actualFiles.length}`);
     
     if (actualFiles.length === 0) {
+      console.log('   📂 Нет файлов для синхронизации');
+      return 0;
+    }
+   
+    let addedCount = 0;
+    
+    for (const file of actualFiles) {
+      const localPath = path.join(uploadsDir, file.name);
+      
+      // Проверяем, есть ли уже такой файл локально
+      if (!fs.existsSync(localPath)) {
+        console.log(`   📥 Скачиваем: ${file.name} (${file.size} bytes)`);
+        
+        try {
+          await client.downloadTo(localPath, file.name);
+          
+          // Проверяем что файл скачался корректно
+          const stat = fs.statSync(localPath);
+          if (stat.size === file.size) {
+            console.log(`   ✅ Скачан: ${file.name}`);
+            
+            // Добавляем в базу данных если нет
+            const existingDoc = dbGet("SELECT * FROM documents WHERE filename = ?", [file.name]);
+            if (!existingDoc) {
+              const ext = path.extname(file.name).toLowerCase().replace('.', '');
+              dbRun(
+                "INSERT INTO documents (title, filename, original_name, file_size, file_type, is_visible) VALUES (?, ?, ?, ?, ?, 1)",
+                [file.name.replace(/\.[^/.]+$/, ''), file.name, file.name, file.size, ext]
+              );
+              addedCount++;
+            }
+          } else {
+            console.log(`   ⚠️ Размер не совпал: ${file.name}`);
+            if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+          }
+        } catch (downloadErr) {
+          console.error(`   ❌ Ошибка скачивания ${file.name}:`, downloadErr.message);
+        }
+      } else {
+        console.log(`   ⏭️ Уже есть: ${file.name}`);
+      }
+    }
+    
+    if (addedCount > 0) {
+      saveDatabase();
+    }
+    
+    console.log(`✅ Синхронизация завершена: ${addedCount} новых файлов`);
+    return addedCount;
+    
+  } catch (error) {
+    console.error('❌ Ошибка синхронизации:', error.message);
+    return 0;
+  } finally {
+    try {
+      await client.close();
+    } catch {}
+  }
+}
+
+// Запуск сервера
+async function startServer() {
+  // Загружаем базу данных с FTP если доступна
+  await loadDatabaseFromFTP();
+  
+  // Загружаем бэкап если есть
+  await loadBackupFromFTP();
+  
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Сервер запущен на порту ${PORT}`);
+    console.log(`📍 API: http://localhost:${PORT}/api`);
+    console.log(`📁 Загрузки: http://localhost:${PORT}/uploads`);
+  });
+}
+
+startServer().catch(console.error);
    
